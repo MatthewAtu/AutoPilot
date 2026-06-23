@@ -1,0 +1,28 @@
+@AutoPilot_HostAddress = http://localhost:5016
+
+GET {{AutoPilot_HostAddress}}/api/emails
+Accept: application/json
+
+###
+
+POST {{AutoPilot_HostAddress}}/api/sendEmail
+Content-Type: application/json
+
+{
+  "message": {
+    "subject": "Send report",
+    "body": {
+      "contentType": "Text",
+      "content": "please send the report for the director to me. It is very important."
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "address": "matthew.atu@ontario.ca"
+        }
+      }
+    ]
+  }
+}
+
+###
