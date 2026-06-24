@@ -6,6 +6,10 @@ namespace AutoPilot.interfaces
     {
         Task<string> GetRecentEmailsAsync();
         Task<bool> SendTasksEmailToOutLook(SendEmailDTO email);
-        Task<SendEmailDTO> GetBotEmailSummary(string promt);
+        Task<SendEmailDTO> GetBotEmailSummary(string prompt);
+        Task<List<EmailItemDTO>> GetStructuredEmailsAsync();
+        Task<List<CalendarEventDTO>> GetCalendarEventsAsync();
+        Task<string> ChatAsync(string message);
+        Task<List<TaskItemDTO>> GetTasksAsync();
     }
 }

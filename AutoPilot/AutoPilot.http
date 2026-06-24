@@ -18,7 +18,7 @@ Content-Type: application/json
     "toRecipients": [
       {
         "emailAddress": {
-          "address": "matthew.atu@ontario.ca"
+          "address": "viet.nguyen2@ontario.ca"
         }
       }
     ]

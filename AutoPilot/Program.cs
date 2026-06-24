@@ -1,4 +1,3 @@
-
 using AutoPilot.Service;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -8,11 +7,27 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddOpenApi();
 
 builder.Services.AddControllers();
+builder.Services.AddHttpClient("graph", client =>
+{
+    client.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/");
+    client.Timeout = TimeSpan.FromMinutes(2);
+});
 
-builder.Services.AddScoped<GraphAuthService>();
+builder.Services.AddHttpClient("ollama", client =>
+{
+    client.BaseAddress = new Uri("http://localhost:11434/");
+    client.Timeout = TimeSpan.FromMinutes(10);
+});
+// builder.Services.AddScoped<GraphAuthService>();
 builder.Services.AddScoped<SummaryService>();
 
 builder.Services.AddHttpClient();
+
+builder.Services.AddCors(options =>
+    options.AddDefaultPolicy(policy =>
+        policy.WithOrigins("http://localhost:5173")
+              .AllowAnyMethod()
+              .AllowAnyHeader()));
 
 var app = builder.Build();
 
@@ -22,11 +37,20 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-var scope = app.Services.CreateScope();
-var AiWarmer = scope.ServiceProvider.GetRequiredService<SummaryService>();
-await AiWarmer.WarmUpModelAsync();
+try
+{
+    using var scope = app.Services.CreateScope();
+    var AiWarmer = scope.ServiceProvider.GetRequiredService<SummaryService>();
+    await AiWarmer.WarmUpModelAsync();
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"Warmup failed: {ex.Message}");
+}
 
 app.UseHttpsRedirection();
+
+app.UseCors();
 
 app.UseRouting();
 

@@ -1,4 +1,3 @@
-// here is where the apis are called (chatbot/azure devops)
 using AutoPilot.DTOs;
 using AutoPilot.interfaces;
 using System.Net;
@@ -11,41 +10,29 @@ namespace AutoPilot.Service
 {
     public class SummaryService : ISummaryService
     {
-        private readonly HttpClient _HttpClient;
-        private readonly GraphAuthService _authService;
+        private readonly HttpClient _graphClient;
+        private readonly HttpClient _ollamaClient;
 
-        public SummaryService(HttpClient httpClient, GraphAuthService authService, IConfiguration Config)
+        public SummaryService(IHttpClientFactory factory, IConfiguration config)
         {
-            _HttpClient = httpClient;
-            _authService = authService;
+            _graphClient = factory.CreateClient("graph");
+            _ollamaClient = factory.CreateClient("ollama");
 
-
-            var token = Config["Graph:AccessToken"];
-            _HttpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        }
-
-        private async Task SetAuthHeaderAsync()
-        {
-            var token = await _authService.GetAccessTokenAsync();
-            _HttpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            var token = config["Graph:AccessToken"];
+            _graphClient.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", token);
         }
 
         public async Task<string> GetRecentEmailsAsync()
         {
-            //await SetAuthHeaderAsync();
-
-            var messages = await _HttpClient.GetAsync(
-                "https://graph.microsoft.com/v1.0/me/messages?$select=subject,from,body&$top=10"
+            var messages = await _graphClient.GetAsync(
+                "https://graph.microsoft.com/v1.0/me/messages?$select=subject,from,body,receivedDateTime,isRead&$top=10"
             );
 
             var returnedEmails = await messages.Content.ReadAsStringAsync();
 
             var parsedReturn = JsonSerializer.Deserialize<RecieveEmailDTO>(returnedEmails,
-            new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                }
-            );
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
             var cleanedEmails = parsedReturn?.Value?
                 .Select(e => new
@@ -67,40 +54,133 @@ namespace AutoPilot.Service
                 )
                 : "No emails found.";
 
-            var htmlStrippedEmail = StripHtml(emailText );
-
-            var cappedEmailText = CapString(htmlStrippedEmail);
-
-            Console.WriteLine(cappedEmailText);
-
-            return cappedEmailText;
+            return CapString(StripHtml(emailText));
         }
 
-
-        public async Task<bool> SendTasksEmailToOutLook(SendEmailDTO email)
+        public async Task<List<EmailItemDTO>> GetStructuredEmailsAsync()
         {
-            //await SetAuthHeaderAsync();
+            var messages = await _graphClient.GetAsync(
+                "https://graph.microsoft.com/v1.0/me/messages?$select=subject,from,body,receivedDateTime,isRead&$top=10"
+            );
 
-            var requestJson = JsonSerializer.Serialize(email);
-            
+            var returnedEmails = await messages.Content.ReadAsStringAsync();
+            var parsedReturn = JsonSerializer.Deserialize<RecieveEmailDTO>(returnedEmails,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            return parsedReturn?.Value?
+                .Select(e => new EmailItemDTO
+                {
+                    Id = e.Id,
+                    Subject = e.Subject ?? "No Subject",
+                    From = e.From?.EmailAddress?.Name ?? "Unknown",
+                    Preview = CapString(StripHtml(e.Body?.Content ?? ""), 120),
+                    ReceivedTime = FormatReceivedTime(e.ReceivedDateTime),
+                    Unread = !e.IsRead
+                })
+                .ToList() ?? [];
+        }
+
+        public async Task<List<CalendarEventDTO>> GetCalendarEventsAsync()
+        {
+            var today = DateTime.UtcNow.Date;
+            var start = today.ToString("yyyy-MM-ddTHH:mm:ss");
+            var end = today.AddDays(1).AddSeconds(-1).ToString("yyyy-MM-ddTHH:mm:ss");
+
+            var response = await _graphClient.GetAsync(
+                $"https://graph.microsoft.com/v1.0/me/calendarView?startDateTime={start}&endDateTime={end}&$select=subject,start,end,attendees"
+            );
+
+            var content = await response.Content.ReadAsStringAsync();
+            var parsed = JsonSerializer.Deserialize<CalendarApiResponse>(content,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            return parsed?.Value?
+                .Select(e => new CalendarEventDTO
+                {
+                    Id = e.Id,
+                    Title = e.Subject ?? "Untitled",
+                    Start = FormatCalendarTime(e.Start?.DateTime),
+                    End = FormatCalendarTime(e.End?.DateTime),
+                    Attendees = e.Attendees?.Count ?? 0
+                })
+                .ToList() ?? [];
+        }
+
+        public async Task<string> ChatAsync(string message)
+        {
+            var emailContext = await GetRecentEmailsAsync();
+
+            var systemPrompt = $@"You are AutoPilot, a concise AI productivity assistant.
+
+You have access to the user's recent emails below. Use them to answer questions accurately.
+When the user asks to summarize emails, list tasks, or asks anything about their inbox — use this data.
+Keep responses short and actionable.
+
+--- RECENT EMAILS ---
+{emailContext}
+--- END EMAILS ---";
+
+            var requestBody = new
+            {
+                model = "llama3",
+                messages = new[]
+                {
+                    new { role = "system", content = systemPrompt },
+                    new { role = "user", content = message }
+                },
+                stream = false
+            };
+
             var content = new StringContent(
-                requestJson,
+                JsonSerializer.Serialize(requestBody),
                 Encoding.UTF8,
                 "application/json"
             );
 
-            var SendEmail = await _HttpClient.PostAsync(
+            var response = await _ollamaClient.PostAsync("http://localhost:11434/api/chat", content);
+            var responseText = await response.Content.ReadAsStringAsync();
+
+            var parsed = JsonSerializer.Deserialize<BotEmailRes>(responseText,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            return parsed?.Message?.Content ?? "No response";
+        }
+
+        public async Task<List<TaskItemDTO>> GetTasksAsync()
+        {
+            var emailText = await GetRecentEmailsAsync();
+            var botSummary = await GetBotEmailSummary(emailText);
+            var botText = botSummary.Message?.Body?.Content ?? "";
+
+            var tasksSection = Regex.Match(botText, @"Tasks:\s*([\s\S]+?)(?:\n\n|$)");
+            if (!tasksSection.Success) return [];
+
+            var taskMatches = Regex.Matches(tasksSection.Groups[1].Value, @"\d+\.\s+(.+)");
+
+            return taskMatches
+                .Select(m => new TaskItemDTO
+                {
+                    Text = m.Groups[1].Value.Trim(),
+                    Priority = DetectPriority(m.Groups[1].Value)
+                })
+                .ToList();
+        }
+
+        public async Task<bool> SendTasksEmailToOutLook(SendEmailDTO email)
+        {
+            var requestJson = JsonSerializer.Serialize(email);
+            var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+
+            var sendEmail = await _graphClient.PostAsync(
                 "https://graph.microsoft.com/v1.0/me/sendMail",
                 content
             );
 
-            return SendEmail.IsSuccessStatusCode;
+            return sendEmail.IsSuccessStatusCode;
         }
 
         public async Task<SendEmailDTO> GetBotEmailSummary(string prompt)
         {
-            //await SetAuthHeaderAsync();
-       
             var llamaPrompt = $@"
                 You are an AI productivity assistant.
 
@@ -113,7 +193,7 @@ namespace AutoPilot.Service
                 - Ignore duplicate emails (treat them as one).
                 - Identify important information and actionable tasks.
                 - Assign priority to tasks based on urgency and importance.
-                - Add more tasks if neccesary.
+                - Add more tasks if necessary.
 
                 Output format (STRICT):
                 Summary:
@@ -123,15 +203,12 @@ namespace AutoPilot.Service
                 1. <task 1>
                 2. <task 2>
                 3. <task 3>
-                
 
                 Emails:
                 {prompt}
                 ";
 
-            var test = "hey how are you?" +
-                        "";
-            var Requestbody = new
+            var requestBody = new
             {
                 model = "llama3",
                 messages = new[]
@@ -141,27 +218,17 @@ namespace AutoPilot.Service
                 stream = false
             };
 
-            var requestJson = JsonSerializer.Serialize(Requestbody);
-
             var content = new StringContent(
-                requestJson,
+                JsonSerializer.Serialize(requestBody),
                 Encoding.UTF8,
                 "application/json"
-            ); 
-
-            var sendToBot = await _HttpClient.PostAsync(
-                "http://localhost:11434/api/chat",
-                content
             );
 
+            var sendToBot = await _ollamaClient.PostAsync("http://localhost:11434/api/chat", content);
             var botEmailResponse = await sendToBot.Content.ReadAsStringAsync();
 
             var parsedReturn = JsonSerializer.Deserialize<BotEmailRes>(botEmailResponse,
-            new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            }
-            );
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
             var cleanedResponse = parsedReturn?.Message?.Content;
 
@@ -169,7 +236,7 @@ namespace AutoPilot.Service
             {
                 Message = new MessageDto
                 {
-                    Subject = "Daily Summary Test",
+                    Subject = "Daily Summary",
                     Body = new BodyDto
                     {
                         ContentType = "Text",
@@ -181,53 +248,69 @@ namespace AutoPilot.Service
                         {
                             EmailAddress = new EmailAddressDto
                             {
-                              Name = "Atu, Matthew (MPBSDP)",
-                              Address = "matthew.atu@ontario.ca"
+                                Name = "Viet, Nguyen",
+                                Address = "viet.nguyen2@ontario.ca"
                             }
                         }
                     ]
                 }
             };
-            }
-            public async Task WarmUpModelAsync()
+        }
+
+        public async Task WarmUpModelAsync()
+        {
+            var requestBody = new
             {
-                var httpClient = new HttpClient();
+                model = "llama3",
+                prompt = "Hello",
+                stream = false
+            };
 
-                var requestBody = new
-                {
-                    model = "llama3",
-                    prompt = "Hello",
-                    stream = false
-                };
+            var content = new StringContent(
+                JsonSerializer.Serialize(requestBody),
+                Encoding.UTF8,
+                "application/json"
+            );
 
-                var content = new StringContent(
-                    JsonSerializer.Serialize(requestBody),
-                    Encoding.UTF8,
-                    "application/json"
-                );
+            await _ollamaClient.PostAsync("http://localhost:11434/api/generate", content);
+        }
 
-                await httpClient.PostAsync(
-                    "http://localhost:11434/api/generate",
-                    content
-                );
-            }
-            public static string CapString(string input, int maxLength = 2000)
-            {
-                if (string.IsNullOrEmpty(input))
-                    return input;
+        public static string CapString(string input, int maxLength = 2000)
+        {
+            if (string.IsNullOrEmpty(input)) return input;
+            return input.Length > maxLength ? input[..maxLength] : input;
+        }
 
-                return input.Length > maxLength
-                    ? input[..maxLength]
-                    : input;
-            }
-
-            public static string StripHtml(string html)
-            {
+        public static string StripHtml(string html)
+        {
             html = Regex.Replace(html, "<!--.*?-->", string.Empty, RegexOptions.Singleline);
             html = Regex.Replace(html, "<.*?>", string.Empty);
-                return WebUtility.HtmlDecode(html);
-            }
+            return WebUtility.HtmlDecode(html);
+        }
 
+        private static string FormatReceivedTime(string? raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "";
+            if (!DateTimeOffset.TryParse(raw, out var dt)) return "";
+            var local = dt.LocalDateTime;
+            return local.Date == DateTime.Today ? local.ToString("h:mm tt") : local.ToString("MMM d");
+        }
 
+        private static string FormatCalendarTime(string? raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "";
+            if (!DateTime.TryParse(raw, null, System.Globalization.DateTimeStyles.RoundtripKind, out var dt)) return "";
+            return dt.ToString("h:mm tt");
+        }
+
+        private static string DetectPriority(string text)
+        {
+            var lower = text.ToLower();
+            if (lower.Contains("urgent") || lower.Contains("asap") || lower.Contains("immediately") || lower.Contains("today") || lower.Contains("deadline"))
+                return "high";
+            if (lower.Contains("soon") || lower.Contains("week") || lower.Contains("friday") || lower.Contains("review") || lower.Contains("prepare"))
+                return "medium";
+            return "low";
+        }
     }
 }

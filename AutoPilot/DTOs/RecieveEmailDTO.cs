@@ -11,6 +11,8 @@
         public string? Subject { get; set; }
         public BodyDto? Body { get; set; }
         public FromDTO? From { get; set; }
+        public string? ReceivedDateTime { get; set; }
+        public bool IsRead { get; set; }
     }
 
     public class FromDTO
