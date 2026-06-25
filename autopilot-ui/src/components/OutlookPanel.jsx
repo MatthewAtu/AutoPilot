@@ -15,6 +15,10 @@ export default function OutlookPanel() {
 
   const unreadCount = emails.filter(e => e.unread).length
 
+  function openOutlook(weblink){
+    window.open(weblink, "_blank", "width=800,height=600");
+  }
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between p-4 border-b border-gray-200">
@@ -36,6 +40,7 @@ export default function OutlookPanel() {
             <div
               key={email.id}
               className={`flex gap-3 p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${email.unread ? 'bg-blue-50/40' : ''}`}
+              onClick={() => openOutlook(email.webLink)}
             >
               <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-xs font-bold shrink-0 mt-0.5">
                 {(email.from ?? '?')[0].toUpperCase()}

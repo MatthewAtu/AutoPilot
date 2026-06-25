@@ -20,6 +20,7 @@ builder.Services.AddHttpClient("ollama", client =>
 });
 // builder.Services.AddScoped<GraphAuthService>();
 builder.Services.AddScoped<SummaryService>();
+builder.Services.AddHostedService<SummaryService>();
 
 builder.Services.AddHttpClient();
 
@@ -42,6 +43,7 @@ try
     using var scope = app.Services.CreateScope();
     var AiWarmer = scope.ServiceProvider.GetRequiredService<SummaryService>();
     await AiWarmer.WarmUpModelAsync();
+    // daily summary goes here
 }
 catch (Exception ex)
 {

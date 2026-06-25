@@ -8,7 +8,7 @@ using System.Text.RegularExpressions;
 
 namespace AutoPilot.Service
 {
-    public class SummaryService : ISummaryService
+    public class SummaryService : BackgroundService, ISummaryService
     {
         private readonly HttpClient _graphClient;
         private readonly HttpClient _ollamaClient;
@@ -60,7 +60,7 @@ namespace AutoPilot.Service
         public async Task<List<EmailItemDTO>> GetStructuredEmailsAsync()
         {
             var messages = await _graphClient.GetAsync(
-                "https://graph.microsoft.com/v1.0/me/messages?$select=subject,from,body,receivedDateTime,isRead&$top=10"
+                "https://graph.microsoft.com/v1.0/me/messages?$select=subject,from,body,receivedDateTime,isRead,webLink&$top=10"
             );
 
             var returnedEmails = await messages.Content.ReadAsStringAsync();
@@ -75,7 +75,8 @@ namespace AutoPilot.Service
                     From = e.From?.EmailAddress?.Name ?? "Unknown",
                     Preview = CapString(StripHtml(e.Body?.Content ?? ""), 120),
                     ReceivedTime = FormatReceivedTime(e.ReceivedDateTime),
-                    Unread = !e.IsRead
+                    Unread = !e.IsRead,
+                    WebLink = e.WebLink 
                 })
                 .ToList() ?? [];
         }
@@ -112,13 +113,13 @@ namespace AutoPilot.Service
 
             var systemPrompt = $@"You are AutoPilot, a concise AI productivity assistant.
 
-You have access to the user's recent emails below. Use them to answer questions accurately.
-When the user asks to summarize emails, list tasks, or asks anything about their inbox — use this data.
-Keep responses short and actionable.
+                You have access to the user's recent emails below. Use them to answer questions accurately.
+                When the user asks to summarize emails, list tasks, or asks anything about their inbox — use this data.
+                Keep responses short and actionable.
 
---- RECENT EMAILS ---
-{emailContext}
---- END EMAILS ---";
+                --- RECENT EMAILS ---
+                {emailContext}
+                --- END EMAILS ---";
 
             var requestBody = new
             {
@@ -170,12 +171,14 @@ Keep responses short and actionable.
         {
             var requestJson = JsonSerializer.Serialize(email);
             var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+            
+            Console.WriteLine("Sending Email");
 
             var sendEmail = await _graphClient.PostAsync(
                 "https://graph.microsoft.com/v1.0/me/sendMail",
                 content
             );
-
+                     
             return sendEmail.IsSuccessStatusCode;
         }
 
@@ -204,8 +207,10 @@ Keep responses short and actionable.
                 2. <task 2>
                 3. <task 3>
 
-                Emails:
+                
+                --- EMAILS TO SUMMARIZE ---
                 {prompt}
+                --- END OF EMAILS TO SUMMARIZE ---
                 ";
 
             var requestBody = new
@@ -248,8 +253,8 @@ Keep responses short and actionable.
                         {
                             EmailAddress = new EmailAddressDto
                             {
-                                Name = "Viet, Nguyen",
-                                Address = "viet.nguyen2@ontario.ca"
+                                Name = "Atu, Matthew",
+                                Address = "matthew.atu@ontario.ca"
                             }
                         }
                     ]
@@ -273,6 +278,34 @@ Keep responses short and actionable.
             );
 
             await _ollamaClient.PostAsync("http://localhost:11434/api/generate", content);
+        }
+
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                var now = DateTime.Now;
+                var nextRun = new DateTime(now.Year, now.Month, now.Day, 9, 0, 0);
+
+                if (now > nextRun)
+                {
+                    nextRun = nextRun.AddDays(1);
+                }
+
+                var delay = nextRun - now;
+
+                if (delay < TimeSpan.Zero)
+                {
+                    delay = TimeSpan.Zero;
+                }
+                
+                await Task.Delay(delay, stoppingToken);
+
+                Console.WriteLine("Sending Daily Summary...");
+                var recentEmails = await GetRecentEmailsAsync();
+                var getBotSummary = await GetBotEmailSummary(recentEmails);
+                await SendTasksEmailToOutLook(getBotSummary);
+            }    
         }
 
         public static string CapString(string input, int maxLength = 2000)

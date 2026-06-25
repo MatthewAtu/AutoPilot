@@ -8,6 +8,7 @@ namespace AutoPilot.DTOs
         public string? Preview { get; set; }
         public string? ReceivedTime { get; set; }
         public bool Unread { get; set; }
+        public string? WebLink { get; set; }
     }
 
     public class CalendarEventDTO

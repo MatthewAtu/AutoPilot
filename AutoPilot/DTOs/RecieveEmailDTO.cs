@@ -13,6 +13,7 @@
         public FromDTO? From { get; set; }
         public string? ReceivedDateTime { get; set; }
         public bool IsRead { get; set; }
+        public string? WebLink { get; set; }
     }
 
     public class FromDTO
