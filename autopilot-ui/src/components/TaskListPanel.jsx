@@ -6,7 +6,7 @@ const PRIORITIES = {
   low: 'bg-green-100 text-green-700',
 }
 
-export default function TaskListPanel() {
+export default function TaskListPanel({ injectedTasks = [] }) {
   const [tasks, setTasks] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -19,6 +19,20 @@ export default function TaskListPanel() {
       .catch(() => setError('Failed to load tasks'))
       .finally(() => setLoading(false))
   }, [])
+
+  useEffect(() => {
+    if (!injectedTasks.length) return
+    setTasks(prev => [
+      ...prev,
+      ...injectedTasks.map(t => ({
+        ...t,
+        id: Date.now() + Math.random(),
+        done: false,
+        source: 'Transcript',
+        priority: t.priority ?? 'medium',
+      })),
+    ])
+  }, [injectedTasks])
 
   const toggle = (id) => setTasks(prev => prev.map(t => t.id === id ? { ...t, done: !t.done } : t))
 

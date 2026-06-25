@@ -262,6 +262,62 @@ namespace AutoPilot.Service
             };
         }
 
+        public async Task<List<TaskItemDTO>> ExtractTasksFromTranscriptAsync(string transcript)
+        {
+            var prompt = $@"You are an AI productivity assistant.
+
+                Extract clear, actionable tasks from the video transcript below.
+
+                Instructions:
+                - Output ONLY a numbered list of tasks. No preamble, no explanation.
+                - Each task must be a single concise sentence starting with an action verb.
+                - Maximum 10 tasks.
+                - Do not include timestamps or speaker names.
+
+                Output format (STRICT):
+                Tasks:
+                1. <task 1>
+                2. <task 2>
+                3. <task 3>
+
+                --- TRANSCRIPT ---
+                {transcript}
+                --- END TRANSCRIPT ---";
+
+            var requestBody = new
+            {
+                model = "llama3",
+                messages = new[]
+                {
+                    new { role = "user", content = prompt }
+                },
+                stream = false
+            };
+
+            var content = new StringContent(
+                JsonSerializer.Serialize(requestBody),
+                Encoding.UTF8,
+                "application/json"
+            );
+
+            var response = await _ollamaClient.PostAsync("http://localhost:11434/api/chat", content);
+            var responseText = await response.Content.ReadAsStringAsync();
+
+            var parsed = JsonSerializer.Deserialize<BotEmailRes>(responseText,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            var text = parsed?.Message?.Content ?? "";
+            var taskMatches = Regex.Matches(text, @"\d+\.\s+(.+)");
+
+            return taskMatches
+                .Select(m => new TaskItemDTO
+                {
+                    Text = m.Groups[1].Value.Trim(),
+                    Priority = DetectPriority(m.Groups[1].Value)
+                })
+                .ToList();
+        }
+
         public async Task WarmUpModelAsync()
         {
             var requestBody = new

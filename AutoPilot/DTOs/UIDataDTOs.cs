@@ -36,6 +36,16 @@ namespace AutoPilot.DTOs
         public string? Reply { get; set; }
     }
 
+    public class TranscriptTasksRequestDTO
+    {
+        public string? Transcript { get; set; }
+    }
+
+    public class TranscriptTasksResponseDTO
+    {
+        public List<TaskItemDTO> Tasks { get; set; } = [];
+    }
+
     // Graph API calendar response shapes
     public class CalendarApiResponse
     {
