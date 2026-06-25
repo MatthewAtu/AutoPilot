@@ -60,5 +60,15 @@ namespace AutoPilot.Controllers
             var sendEmail = await _SummaryService.SendTasksEmailToOutLook(email);
             return Ok(sendEmail);
         }
+
+        [HttpPost("api/tasks/from-transcript")]
+        public async Task<IActionResult> GetTasksFromTranscript([FromBody] TranscriptTasksRequestDTO request)
+        {
+            if (string.IsNullOrWhiteSpace(request.Transcript))
+                return BadRequest("Transcript is required");
+
+            var tasks = await _SummaryService.ExtractTasksFromTranscriptAsync(request.Transcript);
+            return Ok(new TranscriptTasksResponseDTO { Tasks = tasks });
+        }
     }
 }
