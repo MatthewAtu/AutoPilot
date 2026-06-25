@@ -26,7 +26,7 @@ namespace AutoPilot.Service
         public async Task<string> GetRecentEmailsAsync()
         {
             var messages = await _graphClient.GetAsync(
-                "https://graph.microsoft.com/v1.0/me/messages?$select=subject,from,body,receivedDateTime,isRead&$top=10"
+                "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$select=subject,from,body,receivedDateTime,isRead&$top=10"
             );
 
             var returnedEmails = await messages.Content.ReadAsStringAsync();
@@ -60,7 +60,7 @@ namespace AutoPilot.Service
         public async Task<List<EmailItemDTO>> GetStructuredEmailsAsync()
         {
             var messages = await _graphClient.GetAsync(
-                "https://graph.microsoft.com/v1.0/me/messages?$select=subject,from,body,receivedDateTime,isRead,webLink&$top=10"
+                "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$select=subject,from,body,receivedDateTime,isRead,webLink&$top=10"
             );
 
             var returnedEmails = await messages.Content.ReadAsStringAsync();
