@@ -39,11 +39,13 @@ namespace AutoPilot.DTOs
     public class TranscriptTasksRequestDTO
     {
         public string? Transcript { get; set; }
+        public string Model { get; set; } = "gpt-4o";
     }
 
     public class TranscriptTasksResponseDTO
     {
         public List<TaskItemDTO> Tasks { get; set; } = [];
+        public string? Transcript { get; set; }
     }
 
     // Graph API calendar response shapes

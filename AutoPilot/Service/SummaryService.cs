@@ -12,15 +12,22 @@ namespace AutoPilot.Service
     {
         private readonly HttpClient _graphClient;
         private readonly HttpClient _ollamaClient;
+        private readonly HttpClient _groqClient;
+        private readonly string _provider;
+        private readonly string _groqApiKey;
 
         public SummaryService(IHttpClientFactory factory, IConfiguration config)
         {
             _graphClient = factory.CreateClient("graph");
             _ollamaClient = factory.CreateClient("ollama");
+            _groqClient = factory.CreateClient("groq");
 
             var token = config["Graph:AccessToken"];
             _graphClient.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", token);
+
+            _provider = config["AI:Provider"]?.ToLower() ?? "ollama";
+            _groqApiKey = config["Groq:ApiKey"] ?? "";
         }
 
         public async Task<string> GetRecentEmailsAsync()
@@ -76,7 +83,7 @@ namespace AutoPilot.Service
                     Preview = CapString(StripHtml(e.Body?.Content ?? ""), 120),
                     ReceivedTime = FormatReceivedTime(e.ReceivedDateTime),
                     Unread = !e.IsRead,
-                    WebLink = e.WebLink 
+                    WebLink = e.WebLink
                 })
                 .ToList() ?? [];
         }
@@ -107,44 +114,75 @@ namespace AutoPilot.Service
                 .ToList() ?? [];
         }
 
-        public async Task<string> ChatAsync(string message)
+        private string? _cachedEmailContext;
+        private DateTime _emailCacheExpiry = DateTime.MinValue;
+
+        private async Task<string> GetEmailContextAsync()
         {
-            var emailContext = await GetRecentEmailsAsync();
+            if (_cachedEmailContext != null && DateTime.UtcNow < _emailCacheExpiry)
+                return _cachedEmailContext;
 
-            var systemPrompt = $@"You are AutoPilot, a concise AI productivity assistant.
+            var raw = await GetRecentEmailsAsync();
+            _cachedEmailContext = CapString(raw, 800);
+            _emailCacheExpiry = DateTime.UtcNow.AddMinutes(5);
+            return _cachedEmailContext;
+        }
 
-                You have access to the user's recent emails below. Use them to answer questions accurately.
-                When the user asks to summarize emails, list tasks, or asks anything about their inbox — use this data.
-                Keep responses short and actionable.
-
-                --- RECENT EMAILS ---
-                {emailContext}
-                --- END EMAILS ---";
-
-            var requestBody = new
+        private async Task<string> CallLLMAsync(string? systemPrompt, string userMessage)
+        {
+            if (_provider == "groq")
             {
-                model = "llama3",
-                messages = new[]
+                var messages = new List<object>();
+                if (systemPrompt != null)
+                    messages.Add(new { role = "system", content = systemPrompt });
+                messages.Add(new { role = "user", content = userMessage });
+
+                var requestBody = new { model = "llama-3.1-8b-instant", messages, max_tokens = 800 };
+                var request = new HttpRequestMessage(HttpMethod.Post, "https://api.groq.com/openai/v1/chat/completions")
                 {
-                    new { role = "system", content = systemPrompt },
-                    new { role = "user", content = message }
-                },
-                stream = false
-            };
+                    Content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json")
+                };
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _groqApiKey);
 
-            var content = new StringContent(
-                JsonSerializer.Serialize(requestBody),
-                Encoding.UTF8,
-                "application/json"
-            );
+                var response = await _groqClient.SendAsync(request);
+                var responseText = await response.Content.ReadAsStringAsync();
 
-            var response = await _ollamaClient.PostAsync("http://localhost:11434/api/chat", content);
-            var responseText = await response.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(responseText);
+                return doc.RootElement
+                    .GetProperty("choices")[0]
+                    .GetProperty("message")
+                    .GetProperty("content")
+                    .GetString() ?? "No response";
+            }
 
-            var parsed = JsonSerializer.Deserialize<BotEmailRes>(responseText,
+            // Ollama path
+            var ollamaMsgs = new List<object>();
+            if (systemPrompt != null)
+                ollamaMsgs.Add(new { role = "system", content = systemPrompt });
+            ollamaMsgs.Add(new { role = "user", content = userMessage });
+
+            var ollamaBody = new { model = "llama3", messages = ollamaMsgs, stream = false };
+            var content = new StringContent(JsonSerializer.Serialize(ollamaBody), Encoding.UTF8, "application/json");
+
+            var ollamaResponse = await _ollamaClient.PostAsync("http://localhost:11434/api/chat", content);
+            var ollamaText = await ollamaResponse.Content.ReadAsStringAsync();
+
+            var parsed = JsonSerializer.Deserialize<BotEmailRes>(ollamaText,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
             return parsed?.Message?.Content ?? "No response";
+        }
+
+        public async Task<string> ChatAsync(string message)
+        {
+            var emailContext = await GetEmailContextAsync();
+
+            var systemPrompt =
+                "You are AutoPilot, a concise AI assistant. " +
+                "Answer using the email context below. Keep replies short and actionable.\n\n" +
+                $"EMAILS:\n{emailContext}";
+
+            return await CallLLMAsync(systemPrompt, message);
         }
 
         public async Task<List<TaskItemDTO>> GetTasksAsync()
@@ -171,71 +209,30 @@ namespace AutoPilot.Service
         {
             var requestJson = JsonSerializer.Serialize(email);
             var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
-            
+
             Console.WriteLine("Sending Email");
 
             var sendEmail = await _graphClient.PostAsync(
                 "https://graph.microsoft.com/v1.0/me/sendMail",
                 content
             );
-                     
+
             return sendEmail.IsSuccessStatusCode;
         }
 
         public async Task<SendEmailDTO> GetBotEmailSummary(string prompt)
         {
-            var llamaPrompt = $@"
-                You are an AI productivity assistant.
+            var systemPrompt =
+                "You are an AI productivity assistant. Analyze emails and extract useful information.\n" +
+                "Do NOT reply to the emails. ONLY extract insights.\n" +
+                "Ignore duplicates. Identify actionable tasks and assign priority.\n\n" +
+                "Output format (STRICT):\n" +
+                "Summary:\n- <brief summary>\n\n" +
+                "Tasks:\n1. <task 1>\n2. <task 2>\n3. <task 3>";
 
-                Your job is to analyze emails and extract useful information for the user.
+            var userMessage = $"--- EMAILS TO SUMMARIZE ---\n{prompt}\n--- END OF EMAILS ---";
 
-                Instructions:
-                - Do NOT respond as if you are part of the conversation.
-                - Do NOT reply to the emails.
-                - ONLY extract useful insights.
-                - Ignore duplicate emails (treat them as one).
-                - Identify important information and actionable tasks.
-                - Assign priority to tasks based on urgency and importance.
-                - Add more tasks if necessary.
-
-                Output format (STRICT):
-                Summary:
-                - <brief summary of all emails>
-
-                Tasks:
-                1. <task 1>
-                2. <task 2>
-                3. <task 3>
-
-                
-                --- EMAILS TO SUMMARIZE ---
-                {prompt}
-                --- END OF EMAILS TO SUMMARIZE ---
-                ";
-
-            var requestBody = new
-            {
-                model = "llama3",
-                messages = new[]
-                {
-                    new { role = "user", content = llamaPrompt }
-                },
-                stream = false
-            };
-
-            var content = new StringContent(
-                JsonSerializer.Serialize(requestBody),
-                Encoding.UTF8,
-                "application/json"
-            );
-
-            var sendToBot = await _ollamaClient.PostAsync("http://localhost:11434/api/chat", content);
-            var botEmailResponse = await sendToBot.Content.ReadAsStringAsync();
-
-            var parsedReturn = JsonSerializer.Deserialize<BotEmailRes>(botEmailResponse,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-
-            var cleanedResponse = parsedReturn?.Message?.Content;
+            var cleanedResponse = await CallLLMAsync(systemPrompt, userMessage);
 
             return new SendEmailDTO
             {
@@ -264,49 +261,13 @@ namespace AutoPilot.Service
 
         public async Task<List<TaskItemDTO>> ExtractTasksFromTranscriptAsync(string transcript)
         {
-            var prompt = $@"You are an AI productivity assistant.
+            var systemPrompt =
+                "Extract clear, actionable tasks from the transcript.\n" +
+                "Output ONLY a numbered list. No preamble, no explanation.\n" +
+                "Each task is a single concise sentence starting with an action verb. Maximum 10 tasks.\n\n" +
+                "Output format (STRICT):\nTasks:\n1. <task 1>\n2. <task 2>...";
 
-                Extract clear, actionable tasks from the video transcript below.
-
-                Instructions:
-                - Output ONLY a numbered list of tasks. No preamble, no explanation.
-                - Each task must be a single concise sentence starting with an action verb.
-                - Maximum 10 tasks.
-                - Do not include timestamps or speaker names.
-
-                Output format (STRICT):
-                Tasks:
-                1. <task 1>
-                2. <task 2>
-                3. <task 3>
-
-                --- TRANSCRIPT ---
-                {transcript}
-                --- END TRANSCRIPT ---";
-
-            var requestBody = new
-            {
-                model = "llama3",
-                messages = new[]
-                {
-                    new { role = "user", content = prompt }
-                },
-                stream = false
-            };
-
-            var content = new StringContent(
-                JsonSerializer.Serialize(requestBody),
-                Encoding.UTF8,
-                "application/json"
-            );
-
-            var response = await _ollamaClient.PostAsync("http://localhost:11434/api/chat", content);
-            var responseText = await response.Content.ReadAsStringAsync();
-
-            var parsed = JsonSerializer.Deserialize<BotEmailRes>(responseText,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-
-            var text = parsed?.Message?.Content ?? "";
+            var text = await CallLLMAsync(systemPrompt, transcript);
             var taskMatches = Regex.Matches(text, @"\d+\.\s+(.+)");
 
             return taskMatches
@@ -318,8 +279,35 @@ namespace AutoPilot.Service
                 .ToList();
         }
 
+        public async Task<string> TranscribeAudioAsync(IFormFile file)
+        {
+            if (_provider != "groq")
+                throw new InvalidOperationException("Audio transcription requires Groq provider (AI:Provider=groq).");
+
+            using var form = new MultipartFormDataContent();
+            using var stream = file.OpenReadStream();
+            var fileContent = new StreamContent(stream);
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue(file.ContentType ?? "audio/mpeg");
+            form.Add(fileContent, "file", file.FileName);
+            form.Add(new StringContent("whisper-large-v3"), "model");
+
+            var request = new HttpRequestMessage(HttpMethod.Post, "https://api.groq.com/openai/v1/audio/transcriptions")
+            {
+                Content = form
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _groqApiKey);
+
+            var response = await _groqClient.SendAsync(request);
+            var responseText = await response.Content.ReadAsStringAsync();
+
+            using var doc = JsonDocument.Parse(responseText);
+            return doc.RootElement.GetProperty("text").GetString() ?? "";
+        }
+
         public async Task WarmUpModelAsync()
         {
+            if (_provider != "ollama") return;
+
             var requestBody = new
             {
                 model = "llama3",
@@ -344,24 +332,19 @@ namespace AutoPilot.Service
                 var nextRun = new DateTime(now.Year, now.Month, now.Day, 9, 0, 0);
 
                 if (now > nextRun)
-                {
                     nextRun = nextRun.AddDays(1);
-                }
 
                 var delay = nextRun - now;
-
                 if (delay < TimeSpan.Zero)
-                {
                     delay = TimeSpan.Zero;
-                }
-                
+
                 await Task.Delay(delay, stoppingToken);
 
                 Console.WriteLine("Sending Daily Summary...");
                 var recentEmails = await GetRecentEmailsAsync();
                 var getBotSummary = await GetBotEmailSummary(recentEmails);
                 await SendTasksEmailToOutLook(getBotSummary);
-            }    
+            }
         }
 
         public static string CapString(string input, int maxLength = 2000)

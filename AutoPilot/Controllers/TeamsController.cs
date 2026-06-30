@@ -9,6 +9,7 @@ namespace AutoPilot.Controllers
     public class TeamsController : ControllerBase
     {
         private readonly SummaryService _SummaryService;
+
         public TeamsController(SummaryService summaryService)
         {
             _SummaryService = summaryService;
@@ -69,6 +70,25 @@ namespace AutoPilot.Controllers
 
             var tasks = await _SummaryService.ExtractTasksFromTranscriptAsync(request.Transcript);
             return Ok(new TranscriptTasksResponseDTO { Tasks = tasks });
+        }
+
+        [HttpPost("api/tasks/from-video")]
+        [RequestSizeLimit(500_000_000)]
+        public async Task<IActionResult> GetTasksFromVideo([FromForm] IFormFile video, [FromForm] string model = "llama-3.1-8b-instant")
+        {
+            if (video == null || video.Length == 0)
+                return BadRequest("Video file is required");
+
+            try
+            {
+                var transcript = await _SummaryService.TranscribeAudioAsync(video);
+                var tasks = await _SummaryService.ExtractTasksFromTranscriptAsync(transcript);
+                return Ok(new TranscriptTasksResponseDTO { Tasks = tasks, Transcript = transcript });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(ex.Message);
+            }
         }
     }
 }
