@@ -7,6 +7,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddOpenApi();
 
 builder.Services.AddControllers();
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
+{
+    o.MultipartBodyLengthLimit = 500_000_000; // 500 MB for video uploads
+});
 builder.Services.AddHttpClient("graph", client =>
 {
     client.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/");
@@ -17,6 +21,12 @@ builder.Services.AddHttpClient("ollama", client =>
 {
     client.BaseAddress = new Uri("http://localhost:11434/");
     client.Timeout = TimeSpan.FromMinutes(10);
+});
+
+builder.Services.AddHttpClient("groq", client =>
+{
+    client.BaseAddress = new Uri("https://api.groq.com/");
+    client.Timeout = TimeSpan.FromMinutes(2);
 });
 // builder.Services.AddScoped<GraphAuthService>();
 builder.Services.AddScoped<SummaryService>();

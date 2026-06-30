@@ -1,5 +1,14 @@
 import { useState, useEffect } from 'react'
 
+const AVATAR_COLORS = [
+  'from-blue-500 to-cyan-400',
+  'from-violet-500 to-purple-400',
+  'from-emerald-500 to-teal-400',
+  'from-orange-500 to-amber-400',
+  'from-rose-500 to-pink-400',
+  'from-indigo-500 to-blue-400',
+]
+
 export default function OutlookPanel() {
   const [emails, setEmails] = useState([])
   const [loading, setLoading] = useState(true)
@@ -15,49 +24,56 @@ export default function OutlookPanel() {
 
   const unreadCount = emails.filter(e => e.unread).length
 
-  function openOutlook(weblink){
-    window.open(weblink, "_blank", "width=800,height=600");
+  function openOutlook(weblink) {
+    window.open(weblink, '_blank', 'width=800,height=600')
   }
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between p-4 border-b border-gray-200">
-        <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Inbox</h2>
-        {!loading && !error && (
-          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">
+      <PanelHeader icon={
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+        </svg>
+      } title="Inbox">
+        {!loading && !error && unreadCount > 0 && (
+          <span className="text-xs bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2 py-0.5 rounded-full font-medium">
             {unreadCount} unread
           </span>
         )}
-      </div>
+      </PanelHeader>
 
       {loading && <PanelStatus text="Loading emails…" />}
       {error && <PanelStatus text={error} isError />}
 
       {!loading && !error && (
-        <div className="overflow-y-auto flex-1">
+        <div className="overflow-y-auto flex-1 divide-y divide-slate-800/60">
           {emails.length === 0 && <PanelStatus text="No emails found." />}
-          {emails.map((email) => (
+          {emails.map((email, i) => (
             <div
               key={email.id}
-              className={`flex gap-3 p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${email.unread ? 'bg-blue-50/40' : ''}`}
               onClick={() => openOutlook(email.webLink)}
+              className={`flex gap-3 p-4 cursor-pointer hover:bg-slate-800/50 transition-all duration-150 group ${
+                email.unread ? 'bg-indigo-950/20' : ''
+              }`}
             >
-              <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-xs font-bold shrink-0 mt-0.5">
+              <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${AVATAR_COLORS[i % AVATAR_COLORS.length]} flex items-center justify-center text-white text-xs font-bold shrink-0 mt-0.5 shadow-lg`}>
                 {(email.from ?? '?')[0].toUpperCase()}
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex justify-between items-start gap-2">
-                  <span className={`text-sm truncate ${email.unread ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>
+                  <span className={`text-sm truncate ${email.unread ? 'font-semibold text-slate-100' : 'text-slate-300'}`}>
                     {email.from}
                   </span>
-                  <span className="text-xs text-gray-400 shrink-0">{email.receivedTime}</span>
+                  <span className="text-xs text-slate-500 shrink-0 group-hover:text-slate-400 transition-colors">{email.receivedTime}</span>
                 </div>
-                <p className={`text-xs truncate mt-0.5 ${email.unread ? 'font-medium text-gray-800' : 'text-gray-500'}`}>
+                <p className={`text-xs truncate mt-0.5 ${email.unread ? 'font-medium text-slate-200' : 'text-slate-400'}`}>
                   {email.subject}
                 </p>
-                <p className="text-xs text-gray-400 truncate mt-0.5">{email.preview}</p>
+                <p className="text-xs text-slate-500 truncate mt-0.5">{email.preview}</p>
               </div>
-              {email.unread && <div className="w-2 h-2 rounded-full bg-blue-500 shrink-0 mt-2" />}
+              {email.unread && (
+                <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0 mt-2 shadow-sm shadow-indigo-400/50" />
+              )}
             </div>
           ))}
         </div>
@@ -66,9 +82,21 @@ export default function OutlookPanel() {
   )
 }
 
+export function PanelHeader({ icon, title, children }) {
+  return (
+    <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800/80 shrink-0">
+      <div className="flex items-center gap-2">
+        <span className="text-indigo-400">{icon}</span>
+        <h2 className="text-xs font-semibold text-slate-300 uppercase tracking-widest">{title}</h2>
+      </div>
+      {children && <div className="flex items-center gap-2">{children}</div>}
+    </div>
+  )
+}
+
 function PanelStatus({ text, isError }) {
   return (
-    <div className={`flex-1 flex items-center justify-center text-sm ${isError ? 'text-red-400' : 'text-gray-400'}`}>
+    <div className={`flex-1 flex items-center justify-center text-sm ${isError ? 'text-rose-400' : 'text-slate-500'}`}>
       {text}
     </div>
   )
