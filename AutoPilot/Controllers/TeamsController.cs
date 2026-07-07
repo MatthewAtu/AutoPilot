@@ -90,5 +90,18 @@ namespace AutoPilot.Controllers
                 return BadRequest(ex.Message);
             }
         }
+
+        [HttpGet("api/Workflow")]
+        public async Task<IActionResult> WorkflowCategoriseEmail()
+        {
+            // get the emails in the completed folder
+            var completedEmails = await _SummaryService.GetCompletedEmails();
+
+            // then the ai returns the category
+            // finally it is put into the folder with the name that matches the category
+            // var AICategorize = await _SummaryService.CategorizeCompletedEmails(completedEmails);
+
+            return Ok(completedEmails);
+        }
     }
 }

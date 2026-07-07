@@ -14,6 +14,7 @@
         public string? ReceivedDateTime { get; set; }
         public bool IsRead { get; set; }
         public string? WebLink { get; set; }
+        public string? DisplayName { get; set; }
     }
 
     public class FromDTO
