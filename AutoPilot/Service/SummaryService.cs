@@ -400,22 +400,20 @@ namespace AutoPilot.Service
             return CapString(StripHtml(emailText));
         }
 
-        public async Task CategorizeCompletedEmails()
+        public async Task<string> CategorizeCompletedEmails()
         {
             // get the emails that are in the completed
             var emails = await GetCompletedEmails();
 
-            var prompt = """
+            var systemPrompt = $"""
             You are an email classification engine.
 
             Your job is to classify a completed email into exactly one of the following categories:
 
             - Finance
-            - HR
+            - Requests
             - IT Support
-            - Procurement
             - Approvals
-            - Vendor Management
             - General Inquiry
 
             Rules:
@@ -424,16 +422,19 @@ namespace AutoPilot.Service
             3. Do not return multiple categories.
             4. If the email does not clearly fit a category, return "General Inquiry".
             5. Consider both the subject and body when classifying.
-
-            Email Subject:
-            {subject}
-
-            Email Body:
-            {body}
-
-            Category:
+            6. When you see "From:", it is the begining of a new email. Give another category for that email.
             """;
-            
+
+            var userPrompt = $"""
+            emails:
+            {emails}
+            """;
+
+            var category = await CallLLMAsync(systemPrompt, userPrompt);
+
+
+
+            return category;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)

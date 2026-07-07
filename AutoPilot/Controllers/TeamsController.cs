@@ -97,11 +97,13 @@ namespace AutoPilot.Controllers
             // get the emails in the completed folder
             var completedEmails = await _SummaryService.GetCompletedEmails();
 
+            Console.WriteLine(completedEmails);
+
             // then the ai returns the category
             // finally it is put into the folder with the name that matches the category
-            // var AICategorize = await _SummaryService.CategorizeCompletedEmails(completedEmails);
+             var AICategorize = await _SummaryService.CategorizeCompletedEmails();
 
-            return Ok(completedEmails);
+            return Ok(AICategorize);
         }
     }
 }
