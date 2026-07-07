@@ -390,6 +390,7 @@ namespace AutoPilot.Service
             var emailText = cleanedEmails?.Any() == true
                 ? string.Join("\n\n",
                     cleanedEmails.Select(e =>
+                        $"Id: {e?.Id ?? "Unknown"}\n" +
                         $"From: {e?.Name ?? "Unknown"}\n" +
                         $"Subject: {e?.Subject ?? "No Subject"}\n" +
                         $"Body: {e?.Content ?? "No Content"}"
@@ -421,8 +422,9 @@ namespace AutoPilot.Service
             2. Do not explain your reasoning.
             3. Do not return multiple categories.
             4. If the email does not clearly fit a category, return "General Inquiry".
-            5. Consider both the subject and body when classifying.
+            5. Consider only the body when classifying.
             6. When you see "From:", it is the begining of a new email. Give another category for that email.
+            7. Separate every new category by a comma. In the format: Id: category,
             """;
 
             var userPrompt = $"""
@@ -430,11 +432,65 @@ namespace AutoPilot.Service
             {emails}
             """;
 
-            var category = await CallLLMAsync(systemPrompt, userPrompt);
+            var getCategories = await CallLLMAsync(systemPrompt, userPrompt);
+ 
+            string[] categories = getCategories.Split(',')
+            .Select(x => x.Trim())
+            .ToArray();
+
+            //get the folder ID
+            foreach (var category in categories)
+            {
+                var destinationFolderId = await GetFolderId(category);
+
+                var match = Regex.Match(
+                    emails,
+                    @"^Id:\s*(.+)$",
+                    RegexOptions.Multiline);
+
+                if (!match.Success)
+                {
+                    Console.WriteLine($"No message ID found for category '{category}'.");
+                    continue;
+                }
+
+                string messageId = match.Groups[1].Value.Trim();
+
+                Console.WriteLine($"{category} -> {messageId}");
+
+                var moveRequest = new MoveRequestDTO
+                {
+                    DestinationId = destinationFolderId
+                };
+
+                var requestJson = JsonSerializer.Serialize(moveRequest);
+                var requestBody = new StringContent(
+                    requestJson,
+                    Encoding.UTF8,
+                    "application/json");
+
+                var response = await _graphClient.PostAsync(
+                    $"https://graph.microsoft.com/v1.0/me/messages/{messageId}/move",
+                    requestBody
+                    );
+
+                if (response.IsSuccessStatusCode)
+                {
+                    Console.WriteLine(
+                        $"Successfully moved message '{messageId}' to '{category}'.");
+                }
+                else
+                {
+                    Console.WriteLine(
+                        $"Failed to move message '{messageId}' to '{category}'. " +
+                        $"Status: {response.StatusCode}");
+                }
+            }
 
 
+            
 
-            return category;
+            return getCategories;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
