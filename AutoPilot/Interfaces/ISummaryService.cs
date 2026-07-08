@@ -11,5 +11,6 @@ namespace AutoPilot.interfaces
         Task<List<CalendarEventDTO>> GetCalendarEventsAsync();
         Task<string> ChatAsync(string message);
         Task<List<TaskItemDTO>> GetTasksAsync();
+        
     }
 }

@@ -22,7 +22,10 @@ Content-Type: application/json
         }
       }
     ]
-  }
+}
 }
 
 ###
+
+GET {{AutoPilot_HostAddress}}/api/Workflow
+Content-Type: application/json

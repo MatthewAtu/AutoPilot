@@ -8,6 +8,7 @@ import TranscriptTaskModal from './components/TranscriptTaskModal'
 export default function App() {
   const [showTranscript, setShowTranscript] = useState(false)
   const [injectedTasks, setInjectedTasks] = useState([])
+  const [showWorkflowMon, setShowworkflowMon] = useState(false);
 
   function handleTasksAdded(tasks) {
     setInjectedTasks(prev => [...prev, ...tasks])
@@ -38,6 +39,35 @@ export default function App() {
             </svg>
             Transcript
           </button>
+          <button
+            onClick={() => setShowTranscript(true)}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition-all duration-150"
+          >
+          <svg
+            className="w-4 h-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+          <rect
+              x="3"
+              y="4"
+              width="18"
+              height="14"
+              rx="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M5 11h3l1.5-3 2.5 7 2-10 1.5 6H19"
+            />
+          </svg>
+            Workflow Health Monitor
+          </button>
+
         </nav>
 
         {/* Status */}
