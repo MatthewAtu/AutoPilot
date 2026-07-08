@@ -406,6 +406,8 @@ namespace AutoPilot.Service
             // get the emails that are in the completed
             var emails = await GetCompletedEmails();
 
+            Console.WriteLine(emails);
+
             var systemPrompt = $"""
             You are an email classification engine.
 
@@ -486,9 +488,6 @@ namespace AutoPilot.Service
                         $"Status: {response.StatusCode}");
                 }
             }
-
-
-            
 
             return getCategories;
         }
