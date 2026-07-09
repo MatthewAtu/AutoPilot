@@ -105,20 +105,20 @@ export default function TranscriptTaskModal({ onClose, onTasksAdded }) {
     : (tab === 'video' ? 'Transcribe & Extract' : 'Extract Tasks')
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-slate-900 border border-slate-700/60 rounded-2xl shadow-2xl w-full max-w-lg mx-4 flex flex-col overflow-hidden" style={{ maxHeight: '90vh' }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-2xl w-full max-w-lg mx-4 flex flex-col overflow-hidden text-slate-900" style={{ maxHeight: '90vh' }}>
 
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
           <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+            <div className="w-7 h-7 rounded-lg bg-slate-900 flex items-center justify-center shadow-sm shadow-slate-900/20">
               <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.07A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.9L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
               </svg>
             </div>
-            <h2 className="text-base font-semibold text-slate-100">Tasks from Transcript</h2>
+            <h2 className="text-base font-semibold">Tasks from Transcript</h2>
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-300 transition-colors p-1 rounded-lg hover:bg-slate-800">
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-900 transition-colors p-1 rounded-lg hover:bg-slate-100">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -129,13 +129,13 @@ export default function TranscriptTaskModal({ onClose, onTasksAdded }) {
 
           {/* Model selector */}
           <div>
-            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-widest mb-2">
+            <label className="block text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">
               AI Model
             </label>
             <select
               value={model}
               onChange={e => setModel(e.target.value)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all"
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/50 focus:border-slate-900/50 transition-all"
             >
               {MODELS.map(m => (
                 <option key={m.value} value={m.value}>{m.label}</option>
@@ -144,7 +144,7 @@ export default function TranscriptTaskModal({ onClose, onTasksAdded }) {
           </div>
 
           {/* Tabs */}
-          <div className="flex rounded-xl bg-slate-800/80 border border-slate-700/50 p-1 gap-1">
+          <div className="flex rounded-xl bg-slate-100 border border-slate-200 p-1 gap-1">
             {[
               { key: 'transcript', label: 'Paste Transcript' },
               { key: 'video', label: 'Upload Video' },
@@ -154,8 +154,8 @@ export default function TranscriptTaskModal({ onClose, onTasksAdded }) {
                 onClick={() => { setTab(t.key); reset() }}
                 className={`flex-1 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 ${
                   tab === t.key
-                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-slate-950 text-white shadow-sm shadow-slate-900/20'
+                    : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 {t.label}
@@ -170,7 +170,7 @@ export default function TranscriptTaskModal({ onClose, onTasksAdded }) {
               value={transcript}
               onChange={e => setTranscript(e.target.value)}
               placeholder="Paste transcript text here…"
-              className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 resize-none transition-all"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-900/50 focus:border-slate-900/50 resize-none transition-all"
             />
           )}
 
@@ -184,10 +184,10 @@ export default function TranscriptTaskModal({ onClose, onTasksAdded }) {
                 onClick={() => fileInputRef.current?.click()}
                 className={`flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-6 py-10 cursor-pointer transition-all duration-200 ${
                   dragOver
-                    ? 'border-indigo-500 bg-indigo-500/10'
+                    ? 'border-slate-900 bg-slate-900/10'
                     : videoFile
                     ? 'border-emerald-500/50 bg-emerald-500/10'
-                    : 'border-slate-700 hover:border-indigo-500/50 hover:bg-slate-800/60'
+                    : 'border-slate-200 hover:border-slate-300 bg-slate-50'
                 }`}
               >
                 <svg className={`w-8 h-8 ${videoFile ? 'text-emerald-400' : 'text-slate-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -197,7 +197,7 @@ export default function TranscriptTaskModal({ onClose, onTasksAdded }) {
                   <p className="text-sm font-medium text-emerald-300">{videoFile.name}</p>
                 ) : (
                   <>
-                    <p className="text-sm font-medium text-slate-300">Drop a video file here</p>
+                    <p className="text-sm font-medium text-slate-900">Drop a video file here</p>
                     <p className="text-xs text-slate-500">or click to browse — mp4, mov, m4a, webm…</p>
                   </>
                 )}
@@ -214,17 +214,17 @@ export default function TranscriptTaskModal({ onClose, onTasksAdded }) {
           {/* Detected transcript */}
           {detectedTranscript && (
             <details className="text-sm">
-              <summary className="cursor-pointer text-xs font-semibold text-slate-500 uppercase tracking-widest select-none">
+              <summary className="cursor-pointer text-xs font-semibold text-slate-400 uppercase tracking-widest select-none">
                 Detected transcript
               </summary>
-              <p className="mt-2 text-slate-400 whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto bg-slate-800 rounded-xl p-3 text-xs border border-slate-700">
+              <p className="mt-2 text-slate-900 whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto bg-slate-50 rounded-xl p-3 text-xs border border-slate-200">
                 {detectedTranscript}
               </p>
             </details>
           )}
 
           {error && (
-            <p className="text-sm text-rose-300 bg-rose-500/10 border border-rose-500/20 rounded-xl px-4 py-3">{error}</p>
+            <p className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-4 py-3">{error}</p>
           )}
 
           {/* Extracted tasks */}
@@ -240,12 +240,12 @@ export default function TranscriptTaskModal({ onClose, onTasksAdded }) {
                     onClick={() => toggleSelect(task.id)}
                     className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all duration-150 ${
                       selected.has(task.id)
-                        ? 'border-indigo-500/40 bg-indigo-500/10'
-                        : 'border-slate-700/50 hover:border-slate-600 hover:bg-slate-800/60'
+                        ? 'border-slate-900/40 bg-slate-100'
+                        : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
                     }`}
                   >
                     <div className={`w-4 h-4 rounded-md border-2 shrink-0 mt-0.5 flex items-center justify-center transition-all ${
-                      selected.has(task.id) ? 'bg-indigo-600 border-indigo-600' : 'border-slate-600'
+                      selected.has(task.id) ? 'bg-slate-900 border-slate-900' : 'border-slate-300'
                     }`}>
                       {selected.has(task.id) && (
                         <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 10 8">
@@ -254,7 +254,7 @@ export default function TranscriptTaskModal({ onClose, onTasksAdded }) {
                       )}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-slate-200">{task.text}</p>
+                      <p className="text-sm text-slate-900">{task.text}</p>
                       {task.priority && (
                         <span className={`inline-block mt-1.5 text-xs px-1.5 py-0.5 rounded-md font-medium ${PRIORITY_STYLES[task.priority] ?? PRIORITY_STYLES.medium}`}>
                           {task.priority}
@@ -270,14 +270,14 @@ export default function TranscriptTaskModal({ onClose, onTasksAdded }) {
 
         {/* Footer */}
         <div className="flex items-center justify-between gap-3 px-6 py-4 border-t border-slate-800">
-          <button onClick={onClose} className="text-sm text-slate-500 hover:text-slate-300 transition-colors">
+          <button onClick={onClose} className="text-sm text-slate-300 hover:text-slate-100 transition-colors">
             Cancel
           </button>
           <div className="flex gap-2">
             <button
               onClick={tab === 'transcript' ? handleExtractFromTranscript : handleExtractFromVideo}
               disabled={!canExtract || processing}
-              className="bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-slate-200 border border-slate-700 rounded-xl px-4 py-2 text-sm font-medium transition-all duration-150"
+              className="bg-slate-950 hover:bg-slate-900 disabled:opacity-30 disabled:cursor-not-allowed text-white border border-slate-200 rounded-xl px-4 py-2 text-sm font-medium transition-all duration-150"
             >
               {processing && (
                 <span className="inline-flex gap-0.5 mr-2">
@@ -292,7 +292,7 @@ export default function TranscriptTaskModal({ onClose, onTasksAdded }) {
               <button
                 onClick={handleAdd}
                 disabled={selected.size === 0}
-                className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-30 disabled:cursor-not-allowed text-white rounded-xl px-4 py-2 text-sm font-medium transition-all duration-150 shadow-lg shadow-indigo-500/20"
+                className="bg-slate-950 hover:bg-slate-900 disabled:opacity-30 disabled:cursor-not-allowed text-white rounded-xl px-4 py-2 text-sm font-medium transition-all duration-150 shadow-lg shadow-slate-900/20"
               >
                 Add {selected.size} Task{selected.size !== 1 ? 's' : ''}
               </button>
