@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react'
 
 const EVENT_COLORS = [
-  { bar: 'bg-indigo-500', bg: 'bg-indigo-500/10 border-indigo-500/20', text: 'text-indigo-300' },
-  { bar: 'bg-violet-500', bg: 'bg-violet-500/10 border-violet-500/20', text: 'text-violet-300' },
-  { bar: 'bg-emerald-500', bg: 'bg-emerald-500/10 border-emerald-500/20', text: 'text-emerald-300' },
-  { bar: 'bg-amber-500', bg: 'bg-amber-500/10 border-amber-500/20', text: 'text-amber-300' },
-  { bar: 'bg-rose-500', bg: 'bg-rose-500/10 border-rose-500/20', text: 'text-rose-300' },
-  { bar: 'bg-cyan-500', bg: 'bg-cyan-500/10 border-cyan-500/20', text: 'text-cyan-300' },
+  { bar: 'bg-slate-900', bg: 'bg-slate-900/10 border-slate-900/20', text: 'text-slate-700' },
+  { bar: 'bg-zinc-800', bg: 'bg-zinc-800/10 border-zinc-800/20', text: 'text-zinc-700' },
+  { bar: 'bg-stone-700', bg: 'bg-stone-700/10 border-stone-700/20', text: 'text-stone-700' },
+  { bar: 'bg-slate-700', bg: 'bg-slate-700/10 border-slate-700/20', text: 'text-slate-600' },
+  { bar: 'bg-zinc-700', bg: 'bg-zinc-700/10 border-zinc-700/20', text: 'text-zinc-600' },
+  { bar: 'bg-slate-600', bg: 'bg-slate-600/10 border-slate-600/20', text: 'text-slate-500' },
 ]
 
 const DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
@@ -40,12 +40,12 @@ export default function CalendarPanel() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800/80 shrink-0">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 shrink-0">
         <div className="flex items-center gap-2">
-          <svg className="w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <svg className="w-4 h-4 text-slate-900" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
           </svg>
-          <h2 className="text-xs font-semibold text-slate-300 uppercase tracking-widest">Calendar</h2>
+          <h2 className="text-xs font-semibold text-slate-600 uppercase tracking-widest">Calendar</h2>
         </div>
         <span className="text-xs text-slate-500 font-medium">{MONTHS[month]} {year}</span>
       </div>
@@ -63,7 +63,7 @@ export default function CalendarPanel() {
               key={i}
               className={`text-xs py-1 rounded-lg w-6 h-6 mx-auto flex items-center justify-center transition-colors ${
                 d === todayDate
-                  ? 'bg-indigo-600 text-white font-bold shadow-lg shadow-indigo-500/30'
+                  ? 'bg-slate-900 text-white font-bold shadow-lg shadow-slate-900/30'
                   : d
                   ? 'text-slate-400 hover:bg-slate-800 hover:text-slate-200 cursor-pointer'
                   : ''
@@ -86,26 +86,23 @@ export default function CalendarPanel() {
           <p className="text-sm text-slate-500 text-center pt-4">No events today.</p>
         )}
 
-        {!loading && !error && events.map((event, i) => {
-          const color = EVENT_COLORS[i % EVENT_COLORS.length]
-          return (
-            <div key={event.id ?? i} className={`flex gap-3 p-3 rounded-xl border ${color.bg} hover:brightness-110 transition-all cursor-pointer`}>
-              <div className={`w-1 rounded-full ${color.bar} shrink-0`} />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-200 truncate">{event.title}</p>
-                <p className={`text-xs mt-0.5 ${color.text}`}>{event.start} – {event.end}</p>
-              </div>
-              {event.attendees > 0 && (
-                <div className="flex items-center gap-1 shrink-0">
-                  <svg className="w-3 h-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                  <span className="text-xs text-slate-500">{event.attendees}</span>
-                </div>
-              )}
+        {!loading && !error && events.map((event, i) => (
+          <div key={event.id ?? i} className="flex gap-3 p-3 rounded-2xl border border-slate-200 bg-white hover:bg-slate-50 transition-all cursor-pointer">
+            <div className="w-1 rounded-full bg-slate-900 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-slate-900 truncate">{event.title}</p>
+              <p className="text-xs mt-0.5 text-slate-500">{event.start} – {event.end}</p>
             </div>
-          )
-        })}
+            {event.attendees > 0 && (
+              <div className="flex items-center gap-1 shrink-0">
+                <svg className="w-3 h-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <span className="text-xs text-slate-500">{event.attendees}</span>
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   )
