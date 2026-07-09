@@ -355,6 +355,7 @@ namespace AutoPilot.Service
                     {
                         if (folder.Id != null)
                         {
+                            Console.WriteLine("Id: " + folder.Id + " Name: " + DisplayName);
                             FolderId = folder.Id;
                             return FolderId;
                         }
@@ -391,14 +392,13 @@ namespace AutoPilot.Service
                 ? string.Join("\n\n",
                     cleanedEmails.Select(e =>
                         $"Id: {e?.Id ?? "Unknown"}\n" +
-                        $"From: {e?.Name ?? "Unknown"}\n" +
                         $"Subject: {e?.Subject ?? "No Subject"}\n" +
                         $"Body: {e?.Content ?? "No Content"}"
                     )
                 )
                 : "No emails found.";
         
-            return CapString(StripHtml(emailText));
+            return StripHtml(emailText);
         }
 
         public async Task<string> CategorizeCompletedEmails()
@@ -406,7 +406,7 @@ namespace AutoPilot.Service
             // get the emails that are in the completed
             var emails = await GetCompletedEmails();
 
-            Console.WriteLine(emails);
+            emails = WebUtility.UrlDecode(emails);
 
             var systemPrompt = $"""
             You are an email classification engine.
@@ -424,9 +424,10 @@ namespace AutoPilot.Service
             2. Do not explain your reasoning.
             3. Do not return multiple categories.
             4. If the email does not clearly fit a category, return "General Inquiry".
-            5. Consider only the body when classifying.
-            6. When you see "From:", it is the begining of a new email. Give another category for that email.
-            7. Separate every new category by a comma. In the format: Id: category,
+            5. Consider subject and the body when classifying.
+            6. When you see "Id:", it is the begining of a new email. Give another category for that email.
+            7. Separate every new category by a comma.
+            8. Do not include any punctuation at the end of the response
             """;
 
             var userPrompt = $"""
@@ -439,79 +440,95 @@ namespace AutoPilot.Service
             string[] categories = getCategories.Split(',')
             .Select(x => x.Trim())
             .ToArray();
+  
+            var messageIds = Regex.Matches(
+                emails,
+                @"^Id:\s*(.+)$",
+                RegexOptions.Multiline)
+            .Cast<Match>()
+            .Select(m => m.Groups[1].Value.Trim())
+            .ToList();
 
-            //get the folder ID
-            foreach (var category in categories)
+            var emailIdCount = messageIds.Count;
+
+            if (messageIds.Count == 0)
             {
-                var destinationFolderId = await GetFolderId(category);
-
-                var match = Regex.Match(
-                    emails,
-                    @"^Id:\s*(.+)$",
-                    RegexOptions.Multiline);
-
-                if (!match.Success)
-                {
-                    Console.WriteLine($"No message ID found for category '{category}'.");
-                    continue;
-                }
-
-                string messageId = match.Groups[1].Value.Trim();
-
-                Console.WriteLine($"{category} -> {messageId}");
-
-                var moveRequest = new MoveRequestDTO
-                {
-                    DestinationId = destinationFolderId
-                };
-
-                var requestJson = JsonSerializer.Serialize(moveRequest);
-                var requestBody = new StringContent(
-                    requestJson,
-                    Encoding.UTF8,
-                    "application/json");
-
-                var response = await _graphClient.PostAsync(
-                    $"https://graph.microsoft.com/v1.0/me/messages/{messageId}/move",
-                    requestBody
-                    );
-
-                if (response.IsSuccessStatusCode)
-                {
-                    Console.WriteLine(
-                        $"Successfully moved message '{messageId}' to '{category}'.");
-                }
-                else
-                {
-                    Console.WriteLine(
-                        $"Failed to move message '{messageId}' to '{category}'. " +
-                        $"Status: {response.StatusCode}");
-                }
+                Console.WriteLine("No Email Ids found.");
+                return "No Email Ids found.";
             }
 
+            for (var i = 0; i < Math.Min(categories.Length, messageIds.Count); i++)
+            {
+                var category = categories[i];
+                var messageId = messageIds[i];
+
+                Console.WriteLine("Category: " + category + " messageId: "+ messageId);
+
+                var destinationFolderId = await GetFolderId(category);
+                
+                 var moveRequest = new MoveRequestDTO
+                    {
+                        DestinationId = destinationFolderId
+                    };
+
+                    var requestJson = JsonSerializer.Serialize(moveRequest);
+                    var requestBody = new StringContent(
+                        requestJson,
+                        Encoding.UTF8,
+                        "application/json");
+
+                    var response = await _graphClient.PostAsync(
+                        $"https://graph.microsoft.com/v1.0/me/messages/{messageId}/move",
+                        requestBody
+                        );
+
+                    if (response.IsSuccessStatusCode)
+                    {
+                        Console.WriteLine(
+                            $"Successfully moved message '{messageId}' to '{category}'.");
+                    }
+                    else
+                    {
+                        Console.WriteLine(
+                            $"Failed to move message '{messageId}' to '{category}'. " +
+                            $"Status: {response.StatusCode}");
+                    }
+            } 
             return getCategories;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            DateTime lastSummaryRun = DateTime.MinValue;
+
             while (!stoppingToken.IsCancellationRequested)
             {
-                var now = DateTime.Now;
-                var nextRun = new DateTime(now.Year, now.Month, now.Day, 9, 0, 0);
+                try
+                {
+                    // Run categorization every 5 minutes
+                    await CategorizeCompletedEmails();
 
-                if (now > nextRun)
-                    nextRun = nextRun.AddDays(1);
+                    // Run summary once per day at 9 AM
+                    var now = DateTime.Now;
 
-                var delay = nextRun - now;
-                if (delay < TimeSpan.Zero)
-                    delay = TimeSpan.Zero;
+                    if (now.Hour >= 9 && lastSummaryRun.Date != now.Date)
+                    {
+                        Console.WriteLine("Sending Daily Summary...");
 
-                await Task.Delay(delay, stoppingToken);
+                        var recentEmails = await GetRecentEmailsAsync();
+                        var getBotSummary = await GetBotEmailSummary(recentEmails);
 
-                Console.WriteLine("Sending Daily Summary...");
-                var recentEmails = await GetRecentEmailsAsync();
-                var getBotSummary = await GetBotEmailSummary(recentEmails);
-                await SendTasksEmailToOutLook(getBotSummary);
+                        await SendTasksEmailToOutLook(getBotSummary);
+
+                        lastSummaryRun = now;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Background job failed: {ex.Message}");
+                }
+
+                await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
             }
         }
 
