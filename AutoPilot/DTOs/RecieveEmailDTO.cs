@@ -1,8 +1,13 @@
-﻿namespace AutoPilot.DTOs
+﻿using System.Text.Json.Serialization;
+
+namespace AutoPilot.DTOs
 {
     public class RecieveEmailDTO
     {
         public List<ValueDTO>? Value { get; set; }
+
+        [JsonPropertyName("@odata.nextLink")]
+        public string? NextLink { get; set; }
     }
 
     public class ValueDTO

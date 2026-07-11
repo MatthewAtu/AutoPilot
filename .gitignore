@@ -367,3 +367,6 @@ FodyWeavers.xsd
 appsettings.Development.json
 appsettings.*.json
 !appsettings.json
+
+# Local health-monitor JSON store
+AutoPilot/Data/

@@ -29,6 +29,7 @@ builder.Services.AddHttpClient("groq", client =>
     client.Timeout = TimeSpan.FromMinutes(2);
 });
 // builder.Services.AddScoped<GraphAuthService>();
+builder.Services.AddSingleton<HealthMonitorStore>();
 builder.Services.AddScoped<SummaryService>();
 builder.Services.AddHostedService<SummaryService>();
 

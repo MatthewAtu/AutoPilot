@@ -99,5 +99,26 @@ namespace AutoPilot.Controllers
              var AICategorize = await _SummaryService.CategorizeCompletedEmails();
             return Ok(AICategorize);
         }
+
+        [HttpGet("api/health-monitor")]
+        public async Task<IActionResult> GetHealthMonitor()
+        {
+            await _SummaryService.RefreshHealthMonitorAsync();
+            var snapshot = await _SummaryService.GetHealthMonitorSnapshot();
+            return Ok(snapshot);
+        }
+
+        [HttpPost("api/health-monitor/complete")]
+        public async Task<IActionResult> MarkEmailComplete([FromBody] MarkCompleteRequestDTO request)
+        {
+            if (string.IsNullOrWhiteSpace(request.EmailId))
+                return BadRequest("EmailId is required");
+
+            var moved = await _SummaryService.MarkEmailCompleteAsync(request.EmailId);
+            if (!moved) return BadRequest("Could not move email to Resolved.");
+
+            var snapshot = await _SummaryService.GetHealthMonitorSnapshot();
+            return Ok(snapshot);
+        }
     }
 }

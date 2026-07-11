@@ -16,12 +16,23 @@ namespace AutoPilot.Service
         private readonly HttpClient _groqClient;
         private readonly string _provider;
         private readonly string _groqApiKey;
+        private readonly HealthMonitorStore _healthStore;
 
-        public SummaryService(IHttpClientFactory factory, IConfiguration config)
+        private static readonly string[] Categories =
+        [
+            "Finance",
+            "Requests",
+            "IT Support",
+            "Approvals",
+            "General Inquiry"
+        ];
+
+        public SummaryService(IHttpClientFactory factory, IConfiguration config, HealthMonitorStore healthStore)
         {
             _graphClient = factory.CreateClient("graph");
             _ollamaClient = factory.CreateClient("ollama");
             _groqClient = factory.CreateClient("groq");
+            _healthStore = healthStore;
 
             var token = config["Graph:AccessToken"];
             _graphClient.DefaultRequestHeaders.Authorization =
@@ -252,8 +263,8 @@ namespace AutoPilot.Service
                         {
                             EmailAddress = new EmailAddressDto
                             {
-                                Name = "Atu, Matthew",
-                                Address = "matthew.atu@ontario.ca"
+                                // Name = "Atu, Matthew",
+                                // Address = "matthew.atu@ontario.ca"
                             }
                         }
                     ]
@@ -328,46 +339,68 @@ namespace AutoPilot.Service
 
         public async Task<string> GetFolderId(string DisplayName)
         {
-            var mailFolders = await _graphClient.GetAsync(
-                "https://graph.microsoft.com/v1.0/me/mailFolders"
-            );
+            var url = "https://graph.microsoft.com/v1.0/me/mailFolders?$top=100";
 
-            var returnedFolders = await mailFolders.Content.ReadAsStringAsync();
+            while (!string.IsNullOrEmpty(url))
+            {
+                var mailFolders = await _graphClient.GetAsync(url);
+                var returnedFolders = await mailFolders.Content.ReadAsStringAsync();
 
-            var parsedReturn = JsonSerializer.Deserialize<RecieveEmailDTO>(returnedFolders,
+                var parsedReturn = JsonSerializer.Deserialize<RecieveEmailDTO>(returnedFolders,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                var match = parsedReturn?.Value?.FirstOrDefault(f => f.DisplayName == DisplayName);
+                if (match?.Id != null)
+                {
+                    Console.WriteLine("Id: " + match.Id + " Name: " + DisplayName);
+                    return match.Id;
+                }
+
+                url = parsedReturn?.NextLink ?? "";
+            }
+
+            return "";
+        }
+
+        public async Task<string> CreateFolder(string displayName)
+        {
+            var requestBody = new { displayName };
+            var content = new StringContent(
+                JsonSerializer.Serialize(requestBody),
+                Encoding.UTF8,
+                "application/json");
+
+            var response = await _graphClient.PostAsync(
+                "https://graph.microsoft.com/v1.0/me/mailFolders",
+                content);
+
+            var responseText = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"Failed to create folder '{displayName}'. Status: {response.StatusCode}");
+                return "";
+            }
+
+            var parsed = JsonSerializer.Deserialize<ValueDTO>(responseText,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
-            var cleanedFolders = parsedReturn?.Value?
-                .Select(e => new
-                {
-                    e.Id,
-                    e.DisplayName
-                })
-                .ToList();
+            Console.WriteLine($"Created folder '{displayName}' with Id: {parsed?.Id}");
+            return parsed?.Id ?? "";
+        }
 
-            string FolderId = "";
+        public async Task<string> GetOrCreateFolderId(string displayName)
+        {
+            var folderId = await GetFolderId(displayName);
+            if (!string.IsNullOrEmpty(folderId))
+                return folderId;
 
-            if (cleanedFolders != null)
-            {
-                foreach (var folder in cleanedFolders)
-                {
-                    if (folder.DisplayName == DisplayName)
-                    {
-                        if (folder.Id != null)
-                        {
-                            Console.WriteLine("Id: " + folder.Id + " Name: " + DisplayName);
-                            FolderId = folder.Id;
-                            return FolderId;
-                        }
-                    }
-                }
-            }
-            return FolderId;
+            return await CreateFolder(displayName);
         }
 
         public async Task<string> GetCompletedEmails()
         {   
-            var completedFolderId = await GetFolderId("Completed");
+            var completedFolderId = await GetFolderId("To Categorize");
 
             var completeMessages = await _graphClient.GetAsync(
                 $"https://graph.microsoft.com/v1.0/me/mailFolders/{completedFolderId}/messages"
@@ -413,11 +446,7 @@ namespace AutoPilot.Service
 
             Your job is to classify a completed email into exactly one of the following categories:
 
-            - Finance
-            - Requests
-            - IT Support
-            - Approvals
-            - General Inquiry
+            {string.Join("\n", Categories.Select(c => $"- {c}"))}
 
             Rules:
             1. Return only the category name.
@@ -464,37 +493,293 @@ namespace AutoPilot.Service
 
                 Console.WriteLine("Category: " + category + " messageId: "+ messageId);
 
-                var destinationFolderId = await GetFolderId(category);
-                
-                 var moveRequest = new MoveRequestDTO
+                var destinationFolderId = await GetOrCreateFolderId(category);
+
+                if (await MoveMessageAsync(messageId, destinationFolderId))
+                {
+                    Console.WriteLine($"Successfully moved message '{messageId}' to '{category}'.");
+                }
+                else
+                {
+                    Console.WriteLine($"Failed to move message '{messageId}' to '{category}'.");
+                }
+            }
+            return getCategories;
+        }
+
+        // Returns null on a failed fetch so callers can distinguish "folder is empty" from
+        // "couldn't reach Graph this pass" — the latter must never be treated as emails vanishing.
+        private async Task<List<ValueDTO>?> GetFolderMessagesStructured(string folderId)
+        {
+            var messages = await _graphClient.GetAsync(
+                $"https://graph.microsoft.com/v1.0/me/mailFolders/{folderId}/messages?$select=id,subject,from,body,receivedDateTime&$top=100"
+            );
+
+            if (!messages.IsSuccessStatusCode) return null;
+
+            var raw = await messages.Content.ReadAsStringAsync();
+
+            var parsed = JsonSerializer.Deserialize<RecieveEmailDTO>(raw,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            return parsed?.Value ?? [];
+        }
+
+        private static string StripQuotedHeaders(string body)
+        {
+            // Remove quoted reply/forward header lines (From:, Sent:, To:, Cc:, Subject:, Received:)
+            // so the LLM never sees them as candidate deadline dates.
+            return Regex.Replace(body, @"^\s*(From|Sent|To|Cc|Subject|Received):.*$", "",
+                RegexOptions.Multiline | RegexOptions.IgnoreCase);
+        }
+
+        private async Task<DateTime?> ExtractDeadlineAsync(string subject, string body)
+        {
+            var today = DateTime.Now.ToString("yyyy-MM-dd");
+            var cleanedBody = StripQuotedHeaders(body);
+
+            var systemPrompt = $"""
+            You are a deadline extraction engine. Today's date is {today}.
+
+            Read the email below and determine if the SENDER is asking for something to be done
+            by a specific date (e.g. "by Friday", "due June 5th", "EOD tomorrow", "respond within 2 days").
+
+            Rules:
+            1. Only count a date as a deadline if the email is asking the recipient to complete, respond,
+               or deliver something by that date.
+            2. If a deadline is mentioned, resolve it to an absolute date using today's date as the reference
+               and respond with ONLY that date in the format YYYY-MM-DD.
+            3. If no deadline is mentioned, respond with exactly: none
+            4. Do not explain your reasoning. Do not include any other text.
+            """;
+
+            var userPrompt = $"Subject: {subject}\nBody: {CapString(cleanedBody, 1500)}";
+
+            var response = await CallLLMAsync(systemPrompt, userPrompt);
+            var cleaned = response.Trim().Trim('"');
+
+            if (cleaned.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
+
+            return DateTime.TryParse(cleaned, out var deadline) ? deadline.Date : null;
+        }
+
+        // User-initiated: called when someone clicks "Mark Complete" in the UI for an email
+        // still sitting in a category folder. Moves it to "Resolved" and updates the tracked record.
+        public async Task<bool> MarkEmailCompleteAsync(string emailId)
+        {
+            var resolvedFolderId = await GetOrCreateFolderId("Resolved");
+            if (string.IsNullOrEmpty(resolvedFolderId)) return false;
+
+            if (!await MoveMessageAsync(emailId, resolvedFolderId)) return false;
+
+            var store = await _healthStore.LoadAsync();
+            if (store.Emails.TryGetValue(emailId, out var record))
+            {
+                record.ResolvedAt = DateTime.UtcNow;
+                record.ResolutionReason = "ManualComplete";
+                await _healthStore.SaveAsync(store);
+            }
+
+            return true;
+        }
+
+        private async Task<bool> MoveMessageAsync(string messageId, string destinationFolderId)
+        {
+            var moveRequest = new MoveRequestDTO { DestinationId = destinationFolderId };
+            var requestBody = new StringContent(
+                JsonSerializer.Serialize(moveRequest),
+                Encoding.UTF8,
+                "application/json");
+
+            var response = await _graphClient.PostAsync(
+                $"https://graph.microsoft.com/v1.0/me/messages/{messageId}/move",
+                requestBody);
+
+            return response.IsSuccessStatusCode;
+        }
+
+        private static string DetermineStatus(TrackedEmailRecord record, DateTime now)
+        {
+            if (record.Deadline.HasValue)
+                return now.Date > record.Deadline.Value.Date ? "Overdue" : "OnTrack";
+
+            return (now - record.ReceivedDateTime).TotalDays > 1 ? "Warning" : "OnTrack";
+        }
+
+        public async Task RefreshHealthMonitorAsync()
+        {
+            var store = await _healthStore.LoadAsync();
+            var now = DateTime.UtcNow;
+            var seenIds = new HashSet<string>();
+            var scannedCategories = new HashSet<string>();
+
+            foreach (var category in Categories)
+            {
+                var folderId = await GetOrCreateFolderId(category);
+                if (string.IsNullOrEmpty(folderId)) continue;
+
+                var messages = await GetFolderMessagesStructured(folderId);
+                if (messages == null) continue; // fetch failed this pass — don't treat as "folder emptied"
+
+                scannedCategories.Add(category);
+
+                foreach (var msg in messages)
+                {
+                    if (string.IsNullOrEmpty(msg.Id)) continue;
+                    seenIds.Add(msg.Id);
+
+                    var bodyText = StripHtml(msg.Body?.Content ?? "");
+
+                    if (store.Emails.TryGetValue(msg.Id, out var existing))
                     {
-                        DestinationId = destinationFolderId
-                    };
-
-                    var requestJson = JsonSerializer.Serialize(moveRequest);
-                    var requestBody = new StringContent(
-                        requestJson,
-                        Encoding.UTF8,
-                        "application/json");
-
-                    var response = await _graphClient.PostAsync(
-                        $"https://graph.microsoft.com/v1.0/me/messages/{messageId}/move",
-                        requestBody
-                        );
-
-                    if (response.IsSuccessStatusCode)
-                    {
-                        Console.WriteLine(
-                            $"Successfully moved message '{messageId}' to '{category}'.");
+                        existing.LastCheckedAt = now;
+                        existing.ResolvedAt = null;
+                        existing.ResolutionReason = null;
                     }
                     else
                     {
-                        Console.WriteLine(
-                            $"Failed to move message '{messageId}' to '{category}'. " +
-                            $"Status: {response.StatusCode}");
+                        var receivedAt = DateTime.TryParse(msg.ReceivedDateTime, out var rdt) ? rdt.ToUniversalTime() : now;
+                        var deadline = await ExtractDeadlineAsync(msg.Subject ?? "", bodyText);
+
+                        existing = new TrackedEmailRecord
+                        {
+                            Id = msg.Id,
+                            Category = category,
+                            Subject = msg.Subject ?? "No Subject",
+                            From = msg.From?.EmailAddress?.Name ?? "Unknown",
+                            ReceivedDateTime = receivedAt,
+                            Deadline = deadline,
+                            FirstSeenAt = now,
+                            LastCheckedAt = now
+                        };
+                        store.Emails[msg.Id] = existing;
                     }
-            } 
-            return getCategories;
+                }
+            }
+
+            // Mark records no longer present in their category folder as resolved (moved/deleted elsewhere).
+            // Only do this for categories we actually managed to scan this pass.
+            foreach (var record in store.Emails.Values)
+            {
+                if (scannedCategories.Contains(record.Category) && !seenIds.Contains(record.Id) && record.ResolvedAt == null)
+                {
+                    record.ResolvedAt = now;
+                    record.ResolutionReason = "MissingFromFolder";
+                }
+            }
+
+            // If the user dragged a tracked email straight into "Resolved" in Outlook (instead of
+            // clicking Mark Complete), recognize that as a manual completion too.
+            var resolvedFolderIdForScan = await GetOrCreateFolderId("Resolved");
+            if (!string.IsNullOrEmpty(resolvedFolderIdForScan))
+            {
+                var resolvedMessages = await GetFolderMessagesStructured(resolvedFolderIdForScan);
+                if (resolvedMessages != null)
+                {
+                    foreach (var msg in resolvedMessages)
+                    {
+                        if (string.IsNullOrEmpty(msg.Id)) continue;
+                        if (store.Emails.TryGetValue(msg.Id, out var record) && record.ResolutionReason != "ManualComplete")
+                        {
+                            record.ResolvedAt ??= now;
+                            record.ResolutionReason = "ManualComplete";
+                        }
+                    }
+                }
+            }
+
+            var overdueByCategory = new Dictionary<string, int>();
+            var warningByCategory = new Dictionary<string, int>();
+            foreach (var category in Categories)
+            {
+                var active = store.Emails.Values.Where(e => e.Category == category && e.ResolvedAt == null).ToList();
+                overdueByCategory[category] = active.Count(e => DetermineStatus(e, now) == "Overdue");
+                warningByCategory[category] = active.Count(e => DetermineStatus(e, now) == "Warning");
+            }
+
+            var lastSnapshot = store.History.LastOrDefault();
+            if (lastSnapshot == null || (now - lastSnapshot.Timestamp).TotalHours >= 1)
+            {
+                store.History.Add(new HealthHistorySnapshot
+                {
+                    Timestamp = now,
+                    OverdueByCategory = overdueByCategory,
+                    WarningByCategory = warningByCategory
+                });
+
+                if (store.History.Count > 2160) // ~90 days of hourly snapshots
+                    store.History.RemoveRange(0, store.History.Count - 2160);
+            }
+
+            await _healthStore.SaveAsync(store);
+        }
+
+        public async Task<HealthMonitorResponseDTO> GetHealthMonitorSnapshot()
+        {
+            var store = await _healthStore.LoadAsync();
+            var now = DateTime.UtcNow;
+
+            var response = new HealthMonitorResponseDTO { GeneratedAt = now };
+
+            foreach (var category in Categories)
+            {
+                var active = store.Emails.Values
+                    .Where(e => e.Category == category && e.ResolvedAt == null)
+                    .OrderByDescending(e => now - e.ReceivedDateTime)
+                    .ToList();
+
+                var emailDtos = active.Select(e => new EmailHealthDTO
+                {
+                    Id = e.Id,
+                    Subject = e.Subject,
+                    From = e.From,
+                    Category = e.Category,
+                    ReceivedDateTime = e.ReceivedDateTime,
+                    Deadline = e.Deadline,
+                    Status = DetermineStatus(e, now),
+                    AgeHours = Math.Round((now - e.ReceivedDateTime).TotalHours, 1)
+                }).ToList();
+
+                response.Categories.Add(new CategoryHealthDTO
+                {
+                    Category = category,
+                    Total = emailDtos.Count,
+                    OnTrack = emailDtos.Count(e => e.Status == "OnTrack"),
+                    Warning = emailDtos.Count(e => e.Status == "Warning"),
+                    Overdue = emailDtos.Count(e => e.Status == "Overdue"),
+                    AvgAgeHours = emailDtos.Count > 0 ? Math.Round(emailDtos.Average(e => e.AgeHours), 1) : 0,
+                    Emails = emailDtos
+                });
+            }
+
+            response.OverdueItems = response.Categories
+                .SelectMany(c => c.Emails)
+                .Where(e => e.Status is "Warning" or "Overdue")
+                .OrderByDescending(e => e.AgeHours)
+                .ToList();
+
+            response.History = store.History.Select(h => new HistorySnapshotDTO
+            {
+                Timestamp = h.Timestamp,
+                OverdueByCategory = h.OverdueByCategory,
+                WarningByCategory = h.WarningByCategory
+            }).ToList();
+
+            response.RecentlyCompleted = store.Emails.Values
+                .Where(e => e.ResolutionReason == "ManualComplete")
+                .OrderByDescending(e => e.ResolvedAt)
+                .Take(20)
+                .Select(e => new CompletedEmailDTO
+                {
+                    Id = e.Id,
+                    Subject = e.Subject,
+                    From = e.From,
+                    Category = e.Category,
+                    ResolvedAt = e.ResolvedAt!.Value
+                })
+                .ToList();
+
+            return response;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -507,6 +792,9 @@ namespace AutoPilot.Service
                 {
                     // Run categorization every 5 minutes
                     await CategorizeCompletedEmails();
+
+                    // Refresh category health/overdue tracking
+                    await RefreshHealthMonitorAsync();
 
                     // Run summary once per day at 9 AM
                     var now = DateTime.Now;
