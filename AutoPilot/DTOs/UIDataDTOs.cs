@@ -48,6 +48,42 @@ namespace AutoPilot.DTOs
         public string? Transcript { get; set; }
     }
 
+    public class MailFolderDTO
+    {
+        public string? Id { get; set; }
+        public string? Name { get; set; }
+        public int UnreadCount { get; set; }
+    }
+
+    public class MoveEmailRequestDTO
+    {
+        public string? EmailId { get; set; }
+        public string? FolderName { get; set; }
+    }
+
+    public class PendingEmailDTO
+    {
+        public string? Id { get; set; }
+        public string? Subject { get; set; }
+        public string? From { get; set; }
+        public string? Preview { get; set; }
+        public string? ReceivedTime { get; set; }
+    }
+
+    public class CategorizeResultDTO
+    {
+        public int Processed { get; set; }
+        public List<CategorizedEmailDTO> Results { get; set; } = [];
+        public List<string> Errors { get; set; } = [];
+    }
+
+    public class CategorizedEmailDTO
+    {
+        public string? Subject { get; set; }
+        public string? From { get; set; }
+        public string? AssignedCategory { get; set; }
+    }
+
     // Graph API calendar response shapes
     public class CalendarApiResponse
     {

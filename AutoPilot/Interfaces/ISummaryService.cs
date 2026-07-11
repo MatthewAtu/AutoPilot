@@ -11,6 +11,12 @@ namespace AutoPilot.interfaces
         Task<List<CalendarEventDTO>> GetCalendarEventsAsync();
         Task<string> ChatAsync(string message);
         Task<List<TaskItemDTO>> GetTasksAsync();
-        
+        Task<List<MailFolderDTO>> GetMailFoldersAsync();
+        Task<bool> MoveEmailToFolderAsync(string emailId, string folderName);
+        Task<List<PendingEmailDTO>> GetPendingCategorizeEmailsAsync();
+        Task<CategorizeResultDTO> CategorizeCompletedEmails();
+        Task RefreshHealthMonitorAsync();
+        Task<HealthMonitorResponseDTO> GetHealthMonitorSnapshot();
+        Task<bool> MarkEmailCompleteAsync(string emailId);
     }
 }

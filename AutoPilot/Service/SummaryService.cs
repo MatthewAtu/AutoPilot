@@ -337,6 +337,42 @@ namespace AutoPilot.Service
             await _ollamaClient.PostAsync("http://localhost:11434/api/generate", content);
         }
 
+        public async Task<List<MailFolderDTO>> GetMailFoldersAsync()
+        {
+            var folders = new List<MailFolderDTO>();
+            var url = "https://graph.microsoft.com/v1.0/me/mailFolders?$select=id,displayName,unreadItemCount&$top=100";
+
+            while (!string.IsNullOrEmpty(url))
+            {
+                var response = await _graphClient.GetAsync(url);
+                if (!response.IsSuccessStatusCode) break;
+
+                var raw = await response.Content.ReadAsStringAsync();
+                var parsed = JsonSerializer.Deserialize<RecieveEmailDTO>(raw,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                if (parsed?.Value != null)
+                    folders.AddRange(parsed.Value
+                        .Where(f => !string.IsNullOrEmpty(f.DisplayName))
+                        .Select(f => new MailFolderDTO
+                        {
+                            Id = f.Id,
+                            Name = f.DisplayName,
+                        }));
+
+                url = parsed?.NextLink ?? "";
+            }
+
+            return folders.OrderBy(f => f.Name).ToList();
+        }
+
+        public async Task<bool> MoveEmailToFolderAsync(string emailId, string folderName)
+        {
+            var folderId = await GetOrCreateFolderId(folderName);
+            if (string.IsNullOrEmpty(folderId)) return false;
+            return await MoveMessageAsync(emailId, folderId);
+        }
+
         public async Task<string> GetFolderId(string DisplayName)
         {
             var url = "https://graph.microsoft.com/v1.0/me/mailFolders?$top=100";
@@ -399,112 +435,123 @@ namespace AutoPilot.Service
         }
 
         public async Task<string> GetCompletedEmails()
-        {   
-            var completedFolderId = await GetFolderId("To Categorize");
+        {
+            var folderId = await GetFolderId("To Categorize");
+            if (string.IsNullOrEmpty(folderId)) return "No emails found.";
 
-            var completeMessages = await _graphClient.GetAsync(
-                $"https://graph.microsoft.com/v1.0/me/mailFolders/{completedFolderId}/messages"
+            var response = await _graphClient.GetAsync(
+                $"https://graph.microsoft.com/v1.0/me/mailFolders/{folderId}/messages?$select=id,subject,from,body,receivedDateTime&$top=50"
             );
 
-            var completeEmails = await completeMessages.Content.ReadAsStringAsync();
-
-            var parsedCompleteEmail = JsonSerializer.Deserialize<RecieveEmailDTO>(completeEmails,
+            var raw = await response.Content.ReadAsStringAsync();
+            var parsed = JsonSerializer.Deserialize<RecieveEmailDTO>(raw,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
-            var cleanedEmails = parsedCompleteEmail?.Value?
-                .Select(e => new
-                {
-                    e.Id,
-                    e.Subject,
-                    e.Body?.Content,
-                    e.From?.EmailAddress?.Name
-                })
-                .ToList();
-
-            var emailText = cleanedEmails?.Any() == true
-                ? string.Join("\n\n",
-                    cleanedEmails.Select(e =>
-                        $"Id: {e?.Id ?? "Unknown"}\n" +
-                        $"Subject: {e?.Subject ?? "No Subject"}\n" +
-                        $"Body: {e?.Content ?? "No Content"}"
-                    )
-                )
+            var emailText = parsed?.Value?.Any() == true
+                ? string.Join("\n\n", parsed.Value.Select(e =>
+                    $"Id: {e.Id ?? "Unknown"}\n" +
+                    $"Subject: {e.Subject ?? "No Subject"}\n" +
+                    $"Body: {e.Body?.Content ?? "No Content"}"))
                 : "No emails found.";
-        
+
             return StripHtml(emailText);
         }
 
-        public async Task<string> CategorizeCompletedEmails()
+        public async Task<List<PendingEmailDTO>> GetPendingCategorizeEmailsAsync()
         {
-            // get the emails that are in the completed
-            var emails = await GetCompletedEmails();
+            var folderId = await GetFolderId("To Categorize");
+            if (string.IsNullOrEmpty(folderId)) return [];
 
-            emails = WebUtility.UrlDecode(emails);
+            var response = await _graphClient.GetAsync(
+                $"https://graph.microsoft.com/v1.0/me/mailFolders/{folderId}/messages?$select=id,subject,from,body,receivedDateTime&$top=50&$orderby=receivedDateTime+desc"
+            );
+
+            if (!response.IsSuccessStatusCode) return [];
+
+            var raw = await response.Content.ReadAsStringAsync();
+            var parsed = JsonSerializer.Deserialize<RecieveEmailDTO>(raw,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            return parsed?.Value?
+                .Select(e => new PendingEmailDTO
+                {
+                    Id = e.Id,
+                    Subject = e.Subject ?? "No Subject",
+                    From = e.From?.EmailAddress?.Name ?? "Unknown",
+                    Preview = CapString(StripHtml(e.Body?.Content ?? ""), 120),
+                    ReceivedTime = FormatReceivedTime(e.ReceivedDateTime)
+                })
+                .ToList() ?? [];
+        }
+
+        public async Task<CategorizeResultDTO> CategorizeCompletedEmails()
+        {
+            var result = new CategorizeResultDTO();
+
+            var folderId = await GetFolderId("To Categorize");
+            if (string.IsNullOrEmpty(folderId)) return result;
+
+            var messages = await GetFolderMessagesStructured(folderId);
+            if (messages == null || messages.Count == 0) return result;
+
+            var emailText = string.Join("\n\n", messages.Select(e =>
+                $"Id: {e.Id}\n" +
+                $"Subject: {e.Subject ?? "No Subject"}\n" +
+                $"Body: {CapString(StripHtml(e.Body?.Content ?? ""), 300)}"));
 
             var systemPrompt = $"""
             You are an email classification engine.
 
-            Your job is to classify a completed email into exactly one of the following categories:
+            Your job is to classify each email into exactly one of the following categories:
 
             {string.Join("\n", Categories.Select(c => $"- {c}"))}
 
             Rules:
-            1. Return only the category name.
+            1. Return only the category name per email.
             2. Do not explain your reasoning.
-            3. Do not return multiple categories.
-            4. If the email does not clearly fit a category, return "General Inquiry".
-            5. Consider subject and the body when classifying.
-            6. When you see "Id:", it is the begining of a new email. Give another category for that email.
-            7. Separate every new category by a comma.
-            8. Do not include any punctuation at the end of the response
+            3. If the email does not clearly fit a category, return "General Inquiry".
+            4. Each email starts with "Id:". Classify each one.
+            5. Separate every category by a comma, one per email, in the same order.
+            6. Do not include any punctuation at the end.
             """;
 
-            var userPrompt = $"""
-            emails:
-            {emails}
-            """;
+            var getCategories = await CallLLMAsync(systemPrompt,
+                $"Classify these emails:\n\n{emailText}");
 
-            var getCategories = await CallLLMAsync(systemPrompt, userPrompt);
- 
-            string[] categories = getCategories.Split(',')
-            .Select(x => x.Trim())
-            .ToArray();
-  
-            var messageIds = Regex.Matches(
-                emails,
-                @"^Id:\s*(.+)$",
-                RegexOptions.Multiline)
-            .Cast<Match>()
-            .Select(m => m.Groups[1].Value.Trim())
-            .ToList();
+            var assignedCategories = getCategories
+                .Split(',')
+                .Select(x => x.Trim())
+                .ToArray();
 
-            var emailIdCount = messageIds.Count;
-
-            if (messageIds.Count == 0)
+            for (var i = 0; i < Math.Min(assignedCategories.Length, messages.Count); i++)
             {
-                Console.WriteLine("No Email Ids found.");
-                return "No Email Ids found.";
-            }
+                var category = assignedCategories[i];
+                var msg = messages[i];
+                if (string.IsNullOrEmpty(msg.Id)) continue;
 
-            for (var i = 0; i < Math.Min(categories.Length, messageIds.Count); i++)
-            {
-                var category = categories[i];
-                var messageId = messageIds[i];
+                var validCategory = Categories.Contains(category) ? category : "General Inquiry";
+                var destinationFolderId = await GetOrCreateFolderId(validCategory);
 
-                Console.WriteLine("Category: " + category + " messageId: "+ messageId);
+                var moved = !string.IsNullOrEmpty(destinationFolderId) &&
+                            await MoveMessageAsync(msg.Id, destinationFolderId);
 
-                var destinationFolderId = await GetOrCreateFolderId(category);
-
-                if (await MoveMessageAsync(messageId, destinationFolderId))
+                if (moved)
                 {
-                    Console.WriteLine($"Successfully moved message '{messageId}' to '{category}'.");
+                    result.Processed++;
+                    result.Results.Add(new CategorizedEmailDTO
+                    {
+                        Subject = msg.Subject ?? "No Subject",
+                        From = msg.From?.EmailAddress?.Name ?? "Unknown",
+                        AssignedCategory = validCategory
+                    });
                 }
                 else
                 {
-                    Console.WriteLine($"Failed to move message '{messageId}' to '{category}'.");
+                    result.Errors.Add($"Could not move '{msg.Subject}' to '{validCategory}'");
                 }
             }
-            return getCategories;
+
+            return result;
         }
 
         // Returns null on a failed fetch so callers can distinguish "folder is empty" from
