@@ -91,13 +91,42 @@ namespace AutoPilot.Controllers
             }
         }
 
+        [HttpGet("api/folders")]
+        public async Task<IActionResult> GetMailFolders()
+        {
+            var folders = await _SummaryService.GetMailFoldersAsync();
+            return Ok(folders);
+        }
+
+        [HttpPost("api/emails/move")]
+        public async Task<IActionResult> MoveEmail([FromBody] MoveEmailRequestDTO request)
+        {
+            if (string.IsNullOrWhiteSpace(request.EmailId) || string.IsNullOrWhiteSpace(request.FolderName))
+                return BadRequest("EmailId and FolderName are required");
+
+            var moved = await _SummaryService.MoveEmailToFolderAsync(request.EmailId, request.FolderName);
+            return moved ? Ok() : StatusCode(502, "Could not move email");
+        }
+
+        [HttpGet("api/workflow/pending")]
+        public async Task<IActionResult> GetPendingCategorizeEmails()
+        {
+            var emails = await _SummaryService.GetPendingCategorizeEmailsAsync();
+            return Ok(emails);
+        }
+
+        [HttpPost("api/workflow/categorize")]
+        public async Task<IActionResult> RunAICategorization()
+        {
+            var result = await _SummaryService.CategorizeCompletedEmails();
+            return Ok(result);
+        }
+
         [HttpGet("api/Workflow")]
         public async Task<IActionResult> WorkflowCategoriseEmail()
         {
-            // then the ai returns the category
-            // finally it is put into the folder with the name that matches the category
-             var AICategorize = await _SummaryService.CategorizeCompletedEmails();
-            return Ok(AICategorize);
+            var result = await _SummaryService.CategorizeCompletedEmails();
+            return Ok(result);
         }
 
         [HttpGet("api/health-monitor")]
