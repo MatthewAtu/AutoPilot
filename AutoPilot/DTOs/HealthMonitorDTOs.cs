@@ -83,4 +83,15 @@ namespace AutoPilot.DTOs
         public List<HistorySnapshotDTO> History { get; set; } = [];
         public List<CompletedEmailDTO> RecentlyCompleted { get; set; } = [];
     }
+
+    // Full email content, fetched live from Graph when a user opens an item's detail view
+    public class EmailDetailDTO
+    {
+        public string Id { get; set; } = "";
+        public string Subject { get; set; } = "";
+        public string From { get; set; } = "";
+        public DateTime ReceivedDateTime { get; set; }
+        public string Body { get; set; } = "";
+        public string? WebLink { get; set; }
+    }
 }

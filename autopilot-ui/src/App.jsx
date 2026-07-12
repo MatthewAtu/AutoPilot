@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Group, Panel as ResizablePanel, Separator } from 'react-resizable-panels'
 import logo from './assets/logo-White.png'
 import OutlookPanel from './components/OutlookPanel'
 import ChatbotPanel from './components/ChatbotPanel'
@@ -84,7 +85,35 @@ export default function App() {
             </p>
           </section>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="hidden md:block md:h-[calc(100vh-260px)]">
+            <Group orientation="vertical" className="gap-2">
+              <ResizablePanel defaultSize={50} minSize={20}>
+                <Group orientation="horizontal" className="gap-2">
+                  <ResizablePanel defaultSize={50} minSize={20}>
+                    <Panel><OutlookPanel /></Panel>
+                  </ResizablePanel>
+                  <ResizeHandle orientation="horizontal" />
+                  <ResizablePanel defaultSize={50} minSize={20}>
+                    <Panel><ChatbotPanel /></Panel>
+                  </ResizablePanel>
+                </Group>
+              </ResizablePanel>
+              <ResizeHandle orientation="vertical" />
+              <ResizablePanel defaultSize={50} minSize={20}>
+                <Group orientation="horizontal" className="gap-2">
+                  <ResizablePanel defaultSize={50} minSize={20}>
+                    <Panel><CalendarPanel /></Panel>
+                  </ResizablePanel>
+                  <ResizeHandle orientation="horizontal" />
+                  <ResizablePanel defaultSize={50} minSize={20}>
+                    <Panel><TaskListPanel injectedTasks={injectedTasks} /></Panel>
+                  </ResizablePanel>
+                </Group>
+              </ResizablePanel>
+            </Group>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 md:hidden">
             <Panel><OutlookPanel /></Panel>
             <Panel><ChatbotPanel /></Panel>
             <Panel><CalendarPanel /></Panel>
@@ -105,8 +134,28 @@ export default function App() {
 
 function Panel({ children }) {
   return (
-    <section className="bg-white rounded-2xl border border-slate-200 flex flex-col overflow-hidden shadow-sm shadow-slate-400/10">
+    <section className="bg-white rounded-2xl border border-slate-200 flex flex-col overflow-hidden shadow-sm shadow-slate-400/10 min-h-0 h-full">
       {children}
     </section>
+  )
+}
+
+function ResizeHandle({ orientation }) {
+  const isVertical = orientation === 'vertical'
+  return (
+    <Separator
+      className={
+        isVertical
+          ? 'h-2 my-1 flex items-center justify-center group cursor-row-resize'
+          : 'w-2 mx-1 flex items-center justify-center group cursor-col-resize'
+      }
+    >
+      <div
+        className={
+          (isVertical ? 'w-10 h-1' : 'w-1 h-10') +
+          ' rounded-full bg-slate-200 group-hover:bg-slate-400 transition-colors'
+        }
+      />
+    </Separator>
   )
 }

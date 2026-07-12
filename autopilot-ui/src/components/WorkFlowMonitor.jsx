@@ -179,12 +179,14 @@ function DeptRow({ cat }) {
   )
 }
 
-function AlertRow({ item, onComplete, completing }) {
+function AlertRow({ item, onComplete, completing, onOpenDetail }) {
   const isCompleting = completing?.has(item.id)
   const isOverdue = item.status === 'Overdue'
   return (
-    <div className={`flex gap-3 p-3 rounded-xl border transition-colors ${
-      isOverdue ? 'border-rose-200 bg-rose-50' : 'border-amber-200 bg-amber-50'
+    <div
+      onClick={() => onOpenDetail?.(item)}
+      className={`flex gap-3 p-3 rounded-xl border transition-colors cursor-pointer ${
+      isOverdue ? 'border-rose-200 bg-rose-50 hover:bg-rose-100/60' : 'border-amber-200 bg-amber-50 hover:bg-amber-100/60'
     }`}>
       <span className={`w-2 h-2 rounded-full shrink-0 mt-1.5 ${isOverdue ? 'bg-rose-400' : 'bg-amber-400'}`} />
       <div className="flex-1 min-w-0">
@@ -199,7 +201,7 @@ function AlertRow({ item, onComplete, completing }) {
       </div>
       {onComplete && (
         <button
-          onClick={() => onComplete(item.id)}
+          onClick={(e) => { e.stopPropagation(); onComplete(item.id) }}
           disabled={isCompleting}
           className="shrink-0 self-center text-xs px-2.5 py-1.5 rounded-lg font-medium text-emerald-700 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-40 transition-all"
         >
@@ -210,7 +212,7 @@ function AlertRow({ item, onComplete, completing }) {
   )
 }
 
-function CategoryPanel({ cat, isOpen, onToggle, onComplete, completing }) {
+function CategoryPanel({ cat, isOpen, onToggle, onComplete, completing, onOpenDetail }) {
   const hasIssues = cat.warning + cat.overdue > 0
   return (
     <div className={`rounded-2xl border overflow-hidden shadow-sm ${hasIssues ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`}>
@@ -236,7 +238,11 @@ function CategoryPanel({ cat, isOpen, onToggle, onComplete, completing }) {
           ? <p className="text-sm text-slate-400 px-4 pb-4">No emails in this category.</p>
           : <div className="border-t border-slate-200 divide-y divide-slate-100">
               {cat.emails.map(item => (
-                <div key={item.id} className="flex items-center gap-3 px-4 py-3 bg-white hover:bg-slate-50 transition-colors">
+                <div
+                  key={item.id}
+                  onClick={() => onOpenDetail?.(item)}
+                  className="flex items-center gap-3 px-4 py-3 bg-white hover:bg-slate-50 transition-colors cursor-pointer"
+                >
                   <span className={`text-xs px-2 py-0.5 rounded-md font-medium shrink-0 ${STATUS_BADGE[item.status] ?? STATUS_BADGE.OnTrack}`}>{item.status}</span>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-slate-800 truncate">{item.subject}</p>
@@ -247,7 +253,7 @@ function CategoryPanel({ cat, isOpen, onToggle, onComplete, completing }) {
                     {item.deadline && <p className="text-xs text-rose-500">due {formatDate(item.deadline)}</p>}
                   </div>
                   <button
-                    onClick={() => onComplete(item.id)}
+                    onClick={(e) => { e.stopPropagation(); onComplete(item.id) }}
                     disabled={completing?.has(item.id)}
                     className="shrink-0 text-xs px-2.5 py-1.5 rounded-lg font-medium text-emerald-700 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-40 transition-all"
                   >
@@ -257,6 +263,71 @@ function CategoryPanel({ cat, isOpen, onToggle, onComplete, completing }) {
               ))}
             </div>
       )}
+    </div>
+  )
+}
+
+function EmailDetailModal({ item, loading, error, onClose }) {
+  if (!item) return null
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[85vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 p-5 border-b border-slate-100">
+          <div className="min-w-0">
+            <p className="text-base font-semibold text-slate-900 leading-snug">{item.subject}</p>
+            <p className="text-sm text-slate-500 mt-1">{item.from}{item.category ? ` · ${item.category}` : ''}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 px-5 pt-3 flex-wrap">
+          {item.status && (
+            <span className={`text-xs px-2 py-0.5 rounded-md font-medium ${STATUS_BADGE[item.status] ?? STATUS_BADGE.OnTrack}`}>
+              {item.status}
+            </span>
+          )}
+          {item.deadline && <span className="text-xs text-rose-500">due {formatDate(item.deadline)}</span>}
+          {item.resolvedAt && <span className="text-xs text-emerald-600">resolved {formatDateTime(item.resolvedAt)}</span>}
+          {item.receivedDateTime && <span className="text-xs text-slate-400">received {formatDateTime(item.receivedDateTime)}</span>}
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          {loading && <p className="text-sm text-slate-400">Loading email content…</p>}
+          {error && <p className="text-sm text-rose-600">{error}</p>}
+          {!loading && !error && (
+            <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">
+              {item.body || 'No content available.'}
+            </p>
+          )}
+        </div>
+
+        {item.webLink && (
+          <div className="p-4 border-t border-slate-100">
+            <a
+              href={item.webLink} target="_blank" rel="noreferrer"
+              className="text-xs font-medium text-slate-600 hover:text-slate-900 inline-flex items-center gap-1"
+            >
+              Open in Outlook
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+            </a>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -273,6 +344,10 @@ export default function WorkflowMonitor() {
   const [pendingLoading, setPendingLoading] = useState(true)
   const [categorizing, setCategorizing]   = useState(false)
   const [catResult, setCatResult]         = useState(null)
+
+  const [detailItem, setDetailItem]       = useState(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError]     = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true); setError(null)
@@ -322,6 +397,27 @@ export default function WorkflowMonitor() {
     } finally {
       setCompleting(prev => { const n = new Set(prev); n.delete(emailId); return n })
     }
+  }
+
+  async function openEmailDetail(item) {
+    setDetailItem(item)
+    setDetailError(null)
+    setDetailLoading(true)
+    try {
+      const res = await fetch(`/api/health-monitor/email/${item.id}`)
+      if (!res.ok) throw new Error()
+      const detail = await res.json()
+      setDetailItem(prev => (prev?.id === item.id ? { ...prev, ...detail } : prev))
+    } catch {
+      setDetailError('Could not load email content.')
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  function closeEmailDetail() {
+    setDetailItem(null)
+    setDetailError(null)
   }
 
   const metrics = data ? deriveMetrics(data) : null
@@ -514,7 +610,7 @@ export default function WorkflowMonitor() {
                       </div>
                     ) : (
                       data.overdueItems.map(item => (
-                        <AlertRow key={item.id} item={item} onComplete={markComplete} completing={completing} />
+                        <AlertRow key={item.id} item={item} onComplete={markComplete} completing={completing} onOpenDetail={openEmailDetail} />
                       ))
                     )}
                   </div>
@@ -536,6 +632,7 @@ export default function WorkflowMonitor() {
                     onToggle={() => toggleCategory(cat.category)}
                     onComplete={markComplete}
                     completing={completing}
+                    onOpenDetail={openEmailDetail}
                   />
                 ))}
               </div>
@@ -549,7 +646,11 @@ export default function WorkflowMonitor() {
                 </h2>
                 <div className="rounded-2xl border border-slate-200 overflow-hidden divide-y divide-slate-100 shadow-sm">
                   {data.recentlyCompleted.map(item => (
-                    <div key={item.id} className="flex items-center gap-3 px-4 py-3 bg-white hover:bg-slate-50 transition-colors">
+                    <div
+                      key={item.id}
+                      onClick={() => openEmailDetail(item)}
+                      className="flex items-center gap-3 px-4 py-3 bg-white hover:bg-slate-50 transition-colors cursor-pointer"
+                    >
                       <span className="w-5 h-5 rounded-full bg-emerald-100 border border-emerald-200 flex items-center justify-center shrink-0">
                         <svg className="w-3 h-3 text-emerald-600" fill="none" viewBox="0 0 10 8">
                           <path d="M1 4l2.5 2.5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -637,6 +738,13 @@ export default function WorkflowMonitor() {
         </section>
 
       </div>
+
+      <EmailDetailModal
+        item={detailItem}
+        loading={detailLoading}
+        error={detailError}
+        onClose={closeEmailDetail}
+      />
     </div>
   )
 }

@@ -238,7 +238,10 @@ namespace AutoPilot.Service
             var systemPrompt =
                 "You are an AI productivity assistant. Analyze emails and extract useful information.\n" +
                 "Do NOT reply to the emails. ONLY extract insights.\n" +
-                "Ignore duplicates. Identify actionable tasks and assign priority.\n\n" +
+                "Ignore duplicates. Identify actionable tasks and assign priority.\n" +
+                "Only list a task if it is explicitly requested or assigned in the emails below. " +
+                "Do NOT infer, invent, or add tasks that were not actually mentioned, even if they seem like " +
+                "reasonable next steps. If there are no actionable tasks, write exactly: Tasks:\nNone\n\n" +
                 "Output format (STRICT):\n" +
                 "Summary:\n- <brief summary>\n\n" +
                 "Tasks:\n1. <task 1>\n2. <task 2>\n3. <task 3>";
@@ -275,9 +278,14 @@ namespace AutoPilot.Service
         public async Task<List<TaskItemDTO>> ExtractTasksFromTranscriptAsync(string transcript)
         {
             var systemPrompt =
-                "Extract clear, actionable tasks from the transcript.\n" +
+                "Extract clear, actionable tasks from the transcript below.\n" +
+                "Only include a task if it was explicitly stated or directly assigned in the transcript. " +
+                "Do NOT infer, invent, or add tasks that were not actually mentioned, even if they seem like " +
+                "reasonable next steps.\n" +
                 "Output ONLY a numbered list. No preamble, no explanation.\n" +
-                "Each task is a single concise sentence starting with an action verb. Maximum 10 tasks.\n\n" +
+                "Each task is a single concise sentence starting with an action verb, using only details present " +
+                "in the transcript. List every actionable task found — there is no maximum.\n" +
+                "If the transcript contains no actionable tasks, respond with exactly: Tasks:\nNone\n\n" +
                 "Output format (STRICT):\nTasks:\n1. <task 1>\n2. <task 2>...";
 
             var text = await CallLLMAsync(systemPrompt, transcript);
@@ -373,6 +381,18 @@ namespace AutoPilot.Service
             return await MoveMessageAsync(emailId, folderId);
         }
 
+        // User-initiated: called when someone opens an email from the inbox list in the UI.
+        public async Task<bool> MarkEmailReadAsync(string emailId)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Patch, $"https://graph.microsoft.com/v1.0/me/messages/{emailId}")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new { isRead = true }), Encoding.UTF8, "application/json")
+            };
+
+            var response = await _graphClient.SendAsync(request);
+            return response.IsSuccessStatusCode;
+        }
+
         public async Task<string> GetFolderId(string DisplayName)
         {
             var url = "https://graph.microsoft.com/v1.0/me/mailFolders?$top=100";
@@ -436,7 +456,7 @@ namespace AutoPilot.Service
 
         public async Task<string> GetCompletedEmails()
         {
-            var folderId = await GetFolderId("To Categorize");
+            var folderId = await GetOrCreateFolderId("To Categorize");
             if (string.IsNullOrEmpty(folderId)) return "No emails found.";
 
             var response = await _graphClient.GetAsync(
@@ -459,7 +479,7 @@ namespace AutoPilot.Service
 
         public async Task<List<PendingEmailDTO>> GetPendingCategorizeEmailsAsync()
         {
-            var folderId = await GetFolderId("To Categorize");
+            var folderId = await GetOrCreateFolderId("To Categorize");
             if (string.IsNullOrEmpty(folderId)) return [];
 
             var response = await _graphClient.GetAsync(
@@ -488,7 +508,7 @@ namespace AutoPilot.Service
         {
             var result = new CategorizeResultDTO();
 
-            var folderId = await GetFolderId("To Categorize");
+            var folderId = await GetOrCreateFolderId("To Categorize");
             if (string.IsNullOrEmpty(folderId)) return result;
 
             var messages = await GetFolderMessagesStructured(folderId);
@@ -608,6 +628,32 @@ namespace AutoPilot.Service
             if (cleaned.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
 
             return DateTime.TryParse(cleaned, out var deadline) ? deadline.Date : null;
+        }
+
+        // User-initiated: called when someone opens an item's detail view in the UI.
+        // Fetches the full body live from Graph rather than from the store, since the
+        // store never persists body content (only what's needed for deadline tracking).
+        public async Task<EmailDetailDTO?> GetEmailDetailAsync(string emailId)
+        {
+            var response = await _graphClient.GetAsync(
+                $"https://graph.microsoft.com/v1.0/me/messages/{emailId}?$select=id,subject,from,body,receivedDateTime,webLink");
+
+            if (!response.IsSuccessStatusCode) return null;
+
+            var raw = await response.Content.ReadAsStringAsync();
+            var msg = JsonSerializer.Deserialize<ValueDTO>(raw,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if (msg == null) return null;
+
+            return new EmailDetailDTO
+            {
+                Id = msg.Id ?? emailId,
+                Subject = msg.Subject ?? "No Subject",
+                From = msg.From?.EmailAddress?.Name ?? "Unknown",
+                ReceivedDateTime = DateTime.TryParse(msg.ReceivedDateTime, out var rdt) ? rdt.ToUniversalTime() : DateTime.UtcNow,
+                Body = StripHtml(msg.Body?.Content ?? ""),
+                WebLink = msg.WebLink
+            };
         }
 
         // User-initiated: called when someone clicks "Mark Complete" in the UI for an email

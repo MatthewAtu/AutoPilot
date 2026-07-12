@@ -61,6 +61,11 @@ namespace AutoPilot.DTOs
         public string? FolderName { get; set; }
     }
 
+    public class MarkEmailReadRequestDTO
+    {
+        public string? EmailId { get; set; }
+    }
+
     public class PendingEmailDTO
     {
         public string? Id { get; set; }

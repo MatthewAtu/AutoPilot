@@ -48,6 +48,18 @@ export default function OutlookPanel() {
     setTimeout(() => setToast(null), 3000)
   }
 
+  function openEmail(email) {
+    window.open(email.webLink, '_blank', 'width=800,height=600')
+
+    if (!email.unread) return
+    setEmails(prev => prev.map(e => e.id === email.id ? { ...e, unread: false } : e))
+    fetch('/api/emails/mark-read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emailId: email.id }),
+    }).catch(() => {})
+  }
+
   async function moveEmail(emailId, folderName) {
     setOpenMenu(null)
     setMoving(prev => ({ ...prev, [emailId]: true }))
@@ -97,7 +109,7 @@ export default function OutlookPanel() {
       {error   && <PanelStatus text={error} isError />}
 
       {!loading && !error && (
-        <div className="overflow-y-auto flex-1 divide-y divide-slate-100">
+        <div className="overflow-y-auto flex-1 min-h-0 divide-y divide-slate-100">
           {emails.length === 0 && <PanelStatus text="No emails found." />}
 
           {emails.map((email, i) => {
@@ -122,7 +134,7 @@ export default function OutlookPanel() {
                 {/* Body — click opens Outlook */}
                 <div
                   className="flex-1 min-w-0 cursor-pointer"
-                  onClick={() => window.open(email.webLink, '_blank', 'width=800,height=600')}
+                  onClick={() => openEmail(email)}
                 >
                   <div className="flex justify-between items-start gap-2">
                     <span className={`text-sm truncate ${email.unread ? 'font-semibold text-slate-900' : 'text-slate-700'}`}>

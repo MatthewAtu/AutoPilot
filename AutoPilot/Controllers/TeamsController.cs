@@ -108,6 +108,16 @@ namespace AutoPilot.Controllers
             return moved ? Ok() : StatusCode(502, "Could not move email");
         }
 
+        [HttpPost("api/emails/mark-read")]
+        public async Task<IActionResult> MarkEmailRead([FromBody] MarkEmailReadRequestDTO request)
+        {
+            if (string.IsNullOrWhiteSpace(request.EmailId))
+                return BadRequest("EmailId is required");
+
+            var success = await _SummaryService.MarkEmailReadAsync(request.EmailId);
+            return success ? Ok() : StatusCode(502, "Could not mark email as read");
+        }
+
         [HttpGet("api/workflow/pending")]
         public async Task<IActionResult> GetPendingCategorizeEmails()
         {
@@ -135,6 +145,14 @@ namespace AutoPilot.Controllers
             await _SummaryService.RefreshHealthMonitorAsync();
             var snapshot = await _SummaryService.GetHealthMonitorSnapshot();
             return Ok(snapshot);
+        }
+
+        [HttpGet("api/health-monitor/email/{id}")]
+        public async Task<IActionResult> GetEmailDetail(string id)
+        {
+            var detail = await _SummaryService.GetEmailDetailAsync(id);
+            if (detail == null) return NotFound();
+            return Ok(detail);
         }
 
         [HttpPost("api/health-monitor/complete")]
