@@ -25,9 +25,9 @@ namespace AutoPilot.Controllers
         }
 
         [HttpGet("api/emails/list")]
-        public async Task<IActionResult> GetStructuredEmailsAsync()
+        public async Task<IActionResult> GetStructuredEmailsAsync([FromQuery] string? folder)
         {
-            var emails = await _SummaryService.GetStructuredEmailsAsync();
+            var emails = await _SummaryService.GetStructuredEmailsAsync(folder);
             return Ok(emails);
         }
 
@@ -166,6 +166,36 @@ namespace AutoPilot.Controllers
 
             var snapshot = await _SummaryService.GetHealthMonitorSnapshot();
             return Ok(snapshot);
+        }
+
+        [HttpGet("api/health-monitor/categories")]
+        public async Task<IActionResult> GetCategories()
+        {
+            var categories = await _SummaryService.GetCategoryListAsync();
+            return Ok(categories);
+        }
+
+        [HttpPost("api/health-monitor/categories")]
+        public async Task<IActionResult> CreateCategory([FromBody] CreateCategoryRequestDTO request)
+        {
+            if (string.IsNullOrWhiteSpace(request.Name))
+                return BadRequest("Folder name is required");
+
+            var result = await _SummaryService.CreateCategoryAsync(request.Name);
+            if (!result.Success) return BadRequest(result.Error);
+
+            var categories = await _SummaryService.GetCategoryListAsync();
+            return Ok(categories);
+        }
+
+        [HttpDelete("api/health-monitor/categories/{name}")]
+        public async Task<IActionResult> DeleteCategory(string name)
+        {
+            var removed = await _SummaryService.DeleteCategoryAsync(name);
+            if (!removed) return BadRequest("Could not remove that folder — it may be a default category or not exist.");
+
+            var categories = await _SummaryService.GetCategoryListAsync();
+            return Ok(categories);
         }
 
         [HttpPost("api/triage/run")]

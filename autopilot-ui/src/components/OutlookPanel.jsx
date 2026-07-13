@@ -14,8 +14,10 @@ export default function OutlookPanel() {
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
   const [folders, setFolders] = useState([])
+  const [viewFolders, setViewFolders] = useState([])
+  const [selectedFolder, setSelectedFolder] = useState('Inbox')
   const [triageData, setTriageData] = useState({})
-  const [expandedDrafts, setExpandedDrafts] = useState({})
+  const [openDraftId, setOpenDraftId] = useState(null)
   const [openMenu, setOpenMenu] = useState(null)   // email id whose menu is open
   const [moving, setMoving] = useState({})     // { [emailId]: true }
   const [moved, setMoved] = useState({})     // { [emailId]: folderName }
@@ -26,15 +28,14 @@ export default function OutlookPanel() {
   const [draftBodies, setDraftBodies] = useState({})
 
   useEffect(() => {
-    fetch('/api/emails/list')
-      .then(r => r.ok ? r.json() : Promise.reject(r.status))
-      .then(data => setEmails(data))
-      .catch(() => setError('Failed to load emails'))
-      .finally(() => setLoading(false))
-
     fetch('/api/folders')
       .then(r => r.ok ? r.json() : Promise.reject())
       .then(data => setFolders(data))
+      .catch(() => {})
+
+    fetch('/api/health-monitor/categories')
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(data => setViewFolders(data))
       .catch(() => {})
 
     fetch('/api/triage/run', {
@@ -52,6 +53,16 @@ export default function OutlookPanel() {
       })
       .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    setLoading(true); setError(null)
+    const qs = selectedFolder === 'Inbox' ? '' : `?folder=${encodeURIComponent(selectedFolder)}`
+    fetch(`/api/emails/list${qs}`)
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(data => setEmails(data))
+      .catch(() => setError('Failed to load emails'))
+      .finally(() => setLoading(false))
+  }, [selectedFolder])
 
   // Close menu on outside click
   const panelRef = useRef(null)
@@ -133,6 +144,7 @@ export default function OutlookPanel() {
         delete next[emailId]
         return next
       })
+      setOpenDraftId(prev => (prev === emailId ? null : prev))
 
       showToast('Draft approved and sent')
     } else {
@@ -164,6 +176,7 @@ async function rejectDraft(emailId) {
         delete next[emailId]
         return next
       })
+      setOpenDraftId(prev => (prev === emailId ? null : prev))
 
       showToast('Draft rejected')
     } else {
@@ -184,8 +197,19 @@ async function rejectDraft(emailId) {
             <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
           </svg>
         }
-        title="Inbox"
+        title="Mail"
       >
+        <select
+          value={selectedFolder}
+          onChange={e => setSelectedFolder(e.target.value)}
+          title="Choose a folder"
+          className="text-xs border border-slate-200 rounded-md pl-2 pr-1 py-1 bg-white text-slate-700 font-medium hover:bg-slate-50 focus:outline-none focus:ring-1 focus:ring-slate-300"
+        >
+          <option value="Inbox">Inbox</option>
+          {viewFolders.map(f => (
+            <option key={f.name} value={f.name}>{f.name}</option>
+          ))}
+        </select>
         {!loading && !error && unreadCount > 0 && (
           <span className="text-xs bg-slate-100 text-slate-800 border border-slate-300 px-2 py-0.5 rounded-full font-medium">
             {unreadCount} unread
@@ -239,17 +263,19 @@ async function rejectDraft(emailId) {
                     <button
                       onClick={(e) => {
                         e.stopPropagation()
-
-                        setExpandedDrafts(prev => ({
-                          ...prev,
-                          [email.id]: !prev[email.id],
-                        }))
+                        setOpenDraftId(email.id)
                       }}
                       className="mt-2 inline-flex items-center gap-2 rounded-lg bg-slate-100 text-slate-700 px-2.5 py-1 text-xs font-medium hover:bg-slate-200"
                     >
                       {triage.action?.replace('_', ' ')}
                       <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold">
-                        {triage.draftId ? 'Draft Ready' : 'Prepare Draft'}
+                        {triage.draftId
+                          ? 'Draft Ready'
+                          : triage.action === 'reply_needed' || triage.action === 'forward_needed'
+                            ? 'Needs Review'
+                            : triage.action === 'task_needed'
+                              ? 'Task'
+                              : 'No Action Needed'}
                       </span>
                     </button>
                   )}
@@ -301,112 +327,6 @@ async function rejectDraft(emailId) {
                   )}
                 </div>
 
-                {triage && expandedDrafts[email.id] && (
-                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="flex items-center gap-2 mb-4">
-                      <span className="px-2 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-medium">
-                        {triage.action?.replace('_', ' ')}
-                      </span>
-
-                      <span className="text-xs text-slate-500">
-                        {(triage.confidence * 100).toFixed(0)}% confidence
-                      </span>
-
-                      {triage.needsReview && (
-                        <span className="px-2 py-1 rounded-full bg-amber-100 text-amber-700 text-xs font-medium">
-                          Review Required
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="mb-3">
-                      <label className="block text-xs font-medium text-slate-500 mb-1">
-                        Subject
-                      </label>
-
-                      <input
-                        type="text"
-                        value={subjects[email.id] ?? triage.draftSubject ?? ''}
-                        onChange={(e) =>
-                          setSubjects(prev => ({
-                            ...prev,
-                            [email.id]: e.target.value,
-                          }))
-                        }
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2 bg-white text-sm"
-                      />
-                    </div>
-
-                    <div className="mb-3">
-                      <label className="block text-xs font-medium text-slate-500 mb-1">
-                        Recipient
-                      </label>
-
-                      <input
-                        type="text"
-                        value={recipients[email.id] ?? triage.draftTo ?? ''}
-                        onChange={(e) =>
-                          setRecipients(prev => ({
-                            ...prev,
-                            [email.id]: e.target.value,
-                          }))
-                        }
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2 bg-white text-sm"
-                      />
-                    </div>
-
-                    <div className="mb-3">
-                      <label className="block text-xs font-medium text-slate-500 mb-1">
-                        Draft Message
-                      </label>
-
-                      <textarea
-                        value={draftBodies[email.id] ?? triage.draftBody ?? ''}
-                        onChange={(e) =>
-                          setDraftBodies(prev => ({
-                            ...prev,
-                            [email.id]: e.target.value,
-                          }))
-                        }
-                        className="w-full min-h-[180px] rounded-lg border border-slate-200 bg-white p-3 text-sm"
-                      />
-                    </div>
-
-                    <div className="mb-4 rounded-lg border border-slate-200 bg-white p-3">
-                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">
-                        AI Reasoning
-                      </div>
-
-                      <p className="text-sm text-slate-600">
-                        {triage.reasoning}
-                      </p>
-                    </div>
-
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => 
-                          approveDraft(
-                            email.id,
-                            recipients[email.id] ?? triage.draftTo,     
-                            subjects[email.id] ?? triage.draftSubject,
-                            draftBodies[email.id] ?? triage.draftBody
-                          )
-                        }
-                        className="px-2 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-                      >
-                        Approve & Send
-                      </button>
-
-                      <button
-                        onClick={() => rejectDraft(email.id)}
-                        className="px-4 py-2 rounded-lg bg-rose-600 text-white hover:bg-rose-700"
-                      >
-                        Reject
-                      </button>
-                    </div>
-                  </div>
-                )}
-
                 {email.unread && !menuOpen && (
                   <div className="w-1.5 h-1.5 rounded-full bg-slate-700 shrink-0 mt-2 absolute right-4 top-4 group-hover:hidden" />
                 )}
@@ -434,6 +354,151 @@ async function rejectDraft(emailId) {
           {!toast.ok && toast.message}
         </div>
       )}
+
+      {openDraftId && triageData[openDraftId] && (
+        <DraftModal
+          email={emails.find(e => e.id === openDraftId)}
+          triage={triageData[openDraftId]}
+          subject={subjects[openDraftId] ?? triageData[openDraftId].draftSubject ?? ''}
+          recipient={recipients[openDraftId] ?? triageData[openDraftId].draftTo ?? ''}
+          body={draftBodies[openDraftId] ?? triageData[openDraftId].draftBody ?? ''}
+          onSubjectChange={v => setSubjects(prev => ({ ...prev, [openDraftId]: v }))}
+          onRecipientChange={v => setRecipients(prev => ({ ...prev, [openDraftId]: v }))}
+          onBodyChange={v => setDraftBodies(prev => ({ ...prev, [openDraftId]: v }))}
+          onApprove={() => approveDraft(
+            openDraftId,
+            recipients[openDraftId] ?? triageData[openDraftId].draftTo,
+            subjects[openDraftId] ?? triageData[openDraftId].draftSubject,
+            draftBodies[openDraftId] ?? triageData[openDraftId].draftBody
+          )}
+          onReject={() => rejectDraft(openDraftId)}
+          onClose={() => setOpenDraftId(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+function DraftModal({ email, triage, subject, recipient, body, onSubjectChange, onRecipientChange, onBodyChange, onApprove, onReject, onClose }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[88vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 p-5 border-b border-slate-100 shrink-0">
+          <div className="min-w-0">
+            <p className="text-base font-semibold text-slate-900 leading-snug truncate">
+              {email?.subject ?? 'Draft response'}
+            </p>
+            <p className="text-sm text-slate-500 mt-1 truncate">{email?.from}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 px-5 pt-3 flex-wrap shrink-0">
+          <span className="px-2 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-medium">
+            {triage.action?.replace('_', ' ')}
+          </span>
+          <span className="text-xs text-slate-500">{(triage.confidence * 100).toFixed(0)}% confidence</span>
+          {triage.needsReview && (
+            <span className="px-2 py-1 rounded-full bg-amber-100 text-amber-700 text-xs font-medium">
+              Review Required
+            </span>
+          )}
+        </div>
+
+        {triage.draftId ? (
+          <>
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">Subject</label>
+                <input
+                  type="text"
+                  value={subject}
+                  onChange={e => onSubjectChange(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 bg-white text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">Recipient</label>
+                <input
+                  type="text"
+                  value={recipient}
+                  onChange={e => onRecipientChange(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 bg-white text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">Draft Message</label>
+                <textarea
+                  value={body}
+                  onChange={e => onBodyChange(e.target.value)}
+                  className="w-full min-h-[260px] rounded-lg border border-slate-200 bg-white p-3 text-sm"
+                />
+              </div>
+
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">AI Reasoning</div>
+                <p className="text-sm text-slate-600">{triage.reasoning}</p>
+              </div>
+            </div>
+
+            <div className="flex gap-2 p-5 border-t border-slate-100 shrink-0">
+              <button
+                onClick={onApprove}
+                className="flex-1 px-4 py-2 rounded-lg font-medium bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
+              >
+                Approve &amp; Send
+              </button>
+              <button
+                onClick={onReject}
+                className="px-4 py-2 rounded-lg font-medium bg-rose-600 text-white hover:bg-rose-700 transition-colors"
+              >
+                Reject
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            {/* No draft was generated for this email — reply/forward wasn't warranted, or the
+                action is informational/task-only. Show why instead of an empty send form. */}
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+              {triage.taskText && (
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Task</div>
+                  <p className="text-sm text-slate-700">{triage.taskText}</p>
+                </div>
+              )}
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">AI Reasoning</div>
+                <p className="text-sm text-slate-600">{triage.reasoning || 'No reasoning provided.'}</p>
+              </div>
+            </div>
+
+            <div className="flex gap-2 p-5 border-t border-slate-100 shrink-0">
+              <button
+                onClick={onClose}
+                className="flex-1 px-4 py-2 rounded-lg font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }

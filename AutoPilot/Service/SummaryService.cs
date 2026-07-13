@@ -18,6 +18,7 @@ namespace AutoPilot.Service
         private readonly string _groqApiKey;
         private readonly HealthMonitorStore _healthStore;
         private readonly DailyTaskListStore _taskListStore;
+        private readonly TriageDraftStore _triageDraftStore;
 
         private static readonly string[] DefaultCategories =
         [
@@ -36,13 +37,14 @@ namespace AutoPilot.Service
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-        public SummaryService(IHttpClientFactory factory, IConfiguration config, HealthMonitorStore healthStore, DailyTaskListStore taskListStore)
+        public SummaryService(IHttpClientFactory factory, IConfiguration config, HealthMonitorStore healthStore, DailyTaskListStore taskListStore, TriageDraftStore triageDraftStore)
         {
             _graphClient = factory.CreateClient("graph");
             _ollamaClient = factory.CreateClient("ollama");
             _groqClient = factory.CreateClient("groq");
             _healthStore = healthStore;
             _taskListStore = taskListStore;
+            _triageDraftStore = triageDraftStore;
 
             var token = config["Graph:AccessToken"];
             _graphClient.DefaultRequestHeaders.Authorization =
@@ -86,10 +88,17 @@ namespace AutoPilot.Service
             return CapString(StripHtml(emailText));
         }
 
-        public async Task<List<EmailItemDTO>> GetStructuredEmailsAsync()
+        public async Task<List<EmailItemDTO>> GetStructuredEmailsAsync(string? folderName = null)
         {
+            var folderId = "inbox";
+            if (!string.IsNullOrWhiteSpace(folderName) && !string.Equals(folderName, "Inbox", StringComparison.OrdinalIgnoreCase))
+            {
+                var resolvedId = await GetOrCreateFolderId(folderName);
+                if (!string.IsNullOrEmpty(resolvedId)) folderId = resolvedId;
+            }
+
             var messages = await _graphClient.GetAsync(
-                "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$select=subject,from,body,receivedDateTime,isRead,webLink&$top=10"
+                $"https://graph.microsoft.com/v1.0/me/mailFolders/{folderId}/messages?$select=subject,from,body,receivedDateTime,isRead,webLink&$top=10"
             );
 
             var returnedEmails = await messages.Content.ReadAsStringAsync();
@@ -172,8 +181,15 @@ namespace AutoPilot.Service
                 var responseText = await response.Content.ReadAsStringAsync();
 
                 using var doc = JsonDocument.Parse(responseText);
-                return doc.RootElement
-                    .GetProperty("choices")[0]
+                if (!response.IsSuccessStatusCode || !doc.RootElement.TryGetProperty("choices", out var choices))
+                {
+                    var errorMessage = doc.RootElement.TryGetProperty("error", out var err) && err.TryGetProperty("message", out var msg)
+                        ? msg.GetString()
+                        : responseText;
+                    throw new InvalidOperationException($"Groq API error ({(int)response.StatusCode}): {errorMessage}");
+                }
+
+                return choices[0]
                     .GetProperty("message")
                     .GetProperty("content")
                     .GetString() ?? "No response";
@@ -1024,6 +1040,69 @@ namespace AutoPilot.Service
             return response;
         }
 
+        public async Task<List<CategoryListItemDTO>> GetCategoryListAsync()
+        {
+            var store = await _healthStore.LoadAsync();
+            var custom = store.CustomCategories ?? [];
+
+            return DefaultCategories
+                .Select(c => new CategoryListItemDTO { Name = c, IsCustom = false })
+                .Concat(custom.Select(c => new CategoryListItemDTO { Name = c, IsCustom = true }))
+                .ToList();
+        }
+
+        // User-initiated: called when someone adds a folder from the Workflow Monitor UI.
+        // Creates the matching Outlook folder immediately so it's ready for AI categorization.
+        public async Task<CreateCategoryResultDTO> CreateCategoryAsync(string name)
+        {
+            name = name.Trim();
+            if (string.IsNullOrEmpty(name))
+                return new CreateCategoryResultDTO { Success = false, Error = "Folder name is required." };
+
+            var store = await _healthStore.LoadAsync();
+            store.CustomCategories ??= [];
+
+            if (ResolveCategories(store).Any(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase)))
+                return new CreateCategoryResultDTO { Success = false, Error = $"A folder named \"{name}\" already exists." };
+
+            var folderId = await GetOrCreateFolderId(name);
+            if (string.IsNullOrEmpty(folderId))
+                return new CreateCategoryResultDTO { Success = false, Error = "Could not create the Outlook folder." };
+
+            store.CustomCategories.Add(name);
+            await _healthStore.SaveAsync(store);
+
+            return new CreateCategoryResultDTO { Success = true };
+        }
+
+        // Only removes user-created folders — default categories aren't deletable. Deletes the
+        // actual Outlook folder too (Graph moves it to Deleted Items, same as deleting it by hand
+        // in Outlook — recoverable, not a hard delete), so tracking and Outlook stay in sync.
+        public async Task<bool> DeleteCategoryAsync(string name)
+        {
+            var store = await _healthStore.LoadAsync();
+            store.CustomCategories ??= [];
+
+            var isCustom = store.CustomCategories.Any(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase));
+            if (!isCustom) return false;
+
+            var folderId = await GetFolderId(name);
+            if (!string.IsNullOrEmpty(folderId))
+            {
+                var response = await _graphClient.DeleteAsync($"https://graph.microsoft.com/v1.0/me/mailFolders/{folderId}");
+                if (!response.IsSuccessStatusCode)
+                {
+                    Console.WriteLine($"Failed to delete Outlook folder '{name}'. Status: {response.StatusCode}");
+                    return false;
+                }
+            }
+
+            store.CustomCategories.RemoveAll(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase));
+            await _healthStore.SaveAsync(store);
+
+            return true;
+        }
+
         public async Task<TriageRunResult> TriageInboxAsync()
         {
             var messages = await _graphClient.GetAsync(
@@ -1034,6 +1113,32 @@ namespace AutoPilot.Service
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
             var emails = parsed?.Value ?? [];
+            var seenIds = new HashSet<string>(emails.Where(e => e.Id != null).Select(e => e.Id!));
+
+            // Also triage emails already sorted into workflow folders (Finance, IT Support, etc.),
+            // so pending items there get a reply/forward draft prepared too, not just the inbox.
+            var categories = ResolveCategories(await _healthStore.LoadAsync());
+            foreach (var category in categories)
+            {
+                var folderId = await GetOrCreateFolderId(category);
+                if (string.IsNullOrEmpty(folderId)) continue;
+
+                var folderResponse = await _graphClient.GetAsync(
+                    $"https://graph.microsoft.com/v1.0/me/mailFolders/{folderId}/messages?$select=subject,from,body,receivedDateTime,isRead&$top=15"
+                );
+                if (!folderResponse.IsSuccessStatusCode) continue;
+
+                var folderRaw = await folderResponse.Content.ReadAsStringAsync();
+                var folderParsed = JsonSerializer.Deserialize<RecieveEmailDTO>(folderRaw,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                foreach (var msg in folderParsed?.Value ?? [])
+                {
+                    if (string.IsNullOrEmpty(msg.Id) || !seenIds.Add(msg.Id)) continue;
+                    emails.Add(msg);
+                }
+            }
+
             var results = new List<TriageEmailResult>();
 
             foreach (var email in emails)
@@ -1128,20 +1233,49 @@ namespace AutoPilot.Service
                 result.NeedsReview = result.Confidence < 0.60;
                 result.TaskText = analysis.taskText;
 
-                // Create Outlook draft if confidence is sufficient
-                if (!result.NeedsReview && analysis.draftContent != null &&
-                    (result.Action == "reply_needed" || result.Action == "forward_needed"))
+                // Always draft when the AI produced reply/forward content — low-confidence
+                // emails still get NeedsReview=true so the UI flags them, but the user gets
+                // an editable draft to review instead of nothing to work from.
+                if (analysis.draftContent != null &&
+                    (result.Action == "reply_needed" || result.Action == "forward_needed") &&
+                    !string.IsNullOrEmpty(result.Id))
                 {
-                    var toAddress = result.Action == "reply_needed" ? fromAddr : (analysis.draftTo ?? fromAddr);
-                    var draftSubject = result.Action == "reply_needed" ? $"Re: {subject}" : $"Fwd: {subject}";
+                    var draftStore = await _triageDraftStore.LoadAsync();
 
-                    var (draftId, draftBody) = await CreateOutlookDraftAsync(
-                        draftSubject, analysis.draftContent, toAddress);
+                    if (draftStore.Drafts.TryGetValue(result.Id, out var existingDraft))
+                    {
+                        // Already drafted on a previous triage run — reuse it instead of
+                        // creating a duplicate Outlook draft for the same source email.
+                        result.DraftId = existingDraft.DraftId;
+                        result.DraftSubject = existingDraft.DraftSubject;
+                        result.DraftBody = existingDraft.DraftBody;
+                        result.DraftTo = existingDraft.DraftTo;
+                    }
+                    else
+                    {
+                        var toAddress = result.Action == "reply_needed" ? fromAddr : (analysis.draftTo ?? fromAddr);
+                        var draftSubject = result.Action == "reply_needed" ? $"Re: {subject}" : $"Fwd: {subject}";
 
-                    result.DraftId = draftId;
-                    result.DraftSubject = draftSubject;
-                    result.DraftBody = draftBody;
-                    result.DraftTo = toAddress;
+                        var (draftId, draftBody) = await CreateOutlookDraftAsync(
+                            draftSubject, analysis.draftContent, toAddress);
+
+                        result.DraftId = draftId;
+                        result.DraftSubject = draftSubject;
+                        result.DraftBody = draftBody;
+                        result.DraftTo = toAddress;
+
+                        if (draftId != null)
+                        {
+                            draftStore.Drafts[result.Id] = new TriageDraftRecord
+                            {
+                                DraftId = draftId,
+                                DraftSubject = draftSubject,
+                                DraftBody = draftBody ?? "",
+                                DraftTo = toAddress
+                            };
+                            await _triageDraftStore.SaveAsync(draftStore);
+                        }
+                    }
                 }
             }
             catch (Exception ex)
@@ -1238,6 +1372,8 @@ namespace AutoPilot.Service
                 $"https://graph.microsoft.com/v1.0/me/messages/{draftId}/send",
                 new StringContent(""));
 
+            if (sendResponse.IsSuccessStatusCode) await RemoveTriageDraftRecordAsync(draftId);
+
             return sendResponse.IsSuccessStatusCode;
         }
 
@@ -1245,7 +1381,22 @@ namespace AutoPilot.Service
         {
             var response = await _graphClient.DeleteAsync(
                 $"https://graph.microsoft.com/v1.0/me/messages/{draftId}");
+
+            if (response.IsSuccessStatusCode) await RemoveTriageDraftRecordAsync(draftId);
+
             return response.IsSuccessStatusCode;
+        }
+
+        // Clears the idempotency record once a draft is sent or rejected, so if the same
+        // source email is ever seen again it's eligible to be drafted fresh.
+        private async Task RemoveTriageDraftRecordAsync(string draftId)
+        {
+            var store = await _triageDraftStore.LoadAsync();
+            var sourceIds = store.Drafts.Where(kv => kv.Value.DraftId == draftId).Select(kv => kv.Key).ToList();
+            if (sourceIds.Count == 0) return;
+
+            foreach (var id in sourceIds) store.Drafts.Remove(id);
+            await _triageDraftStore.SaveAsync(store);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)

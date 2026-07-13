@@ -45,4 +45,19 @@ namespace AutoPilot.DTOs
         public string? draftTo { get; set; }
         public string? taskText { get; set; }
     }
+
+    // Persisted record linking a source email to the Outlook draft already created for it,
+    // so re-running triage doesn't create a duplicate draft for the same email.
+    public class TriageDraftRecord
+    {
+        public string DraftId { get; set; } = "";
+        public string DraftSubject { get; set; } = "";
+        public string DraftBody { get; set; } = "";
+        public string DraftTo { get; set; } = "";
+    }
+
+    public class TriageDraftStoreData
+    {
+        public Dictionary<string, TriageDraftRecord> Drafts { get; set; } = new();
+    }
 }
