@@ -168,34 +168,28 @@ namespace AutoPilot.Controllers
             return Ok(snapshot);
         }
 
-        [HttpGet("api/health-monitor/categories")]
-        public async Task<IActionResult> GetCategories()
+        [HttpPost("api/triage/run")]
+        public async Task<IActionResult> RunTriage()
         {
-            var categories = await _SummaryService.GetCategoryListAsync();
-            return Ok(categories);
+            var result = await _SummaryService.TriageInboxAsync();
+            return Ok(result);
         }
 
-        [HttpPost("api/health-monitor/categories")]
-        public async Task<IActionResult> CreateCategory([FromBody] CreateCategoryRequestDTO request)
+        [HttpPost("api/triage/approve")]
+        public async Task<IActionResult> ApproveDraft([FromBody] ApproveActionDTO request)
         {
-            if (string.IsNullOrWhiteSpace(request.Name))
-                return BadRequest("Folder name is required");
+            if (string.IsNullOrEmpty(request.DraftId))
+                return BadRequest("DraftId is required.");
 
-            var result = await _SummaryService.CreateCategoryAsync(request.Name);
-            if (!result.Success) return BadRequest(result.Error);
-
-            var categories = await _SummaryService.GetCategoryListAsync();
-            return Ok(categories);
+            var sent = await _SummaryService.ApproveDraftAsync(request.DraftId, request.EditedBody, request.EditedSubject, request.EditedTo);
+            return sent ? Ok(new { success = true }) : StatusCode(500, new { success = false });
         }
 
-        [HttpDelete("api/health-monitor/categories/{name}")]
-        public async Task<IActionResult> DeleteCategory(string name)
+        [HttpDelete("api/triage/draft/{draftId}")]
+        public async Task<IActionResult> RejectDraft(string draftId)
         {
-            var removed = await _SummaryService.DeleteCategoryAsync(name);
-            if (!removed) return BadRequest("Could not remove that folder — it may be a default category or not exist.");
-
-            var categories = await _SummaryService.GetCategoryListAsync();
-            return Ok(categories);
+            var deleted = await _SummaryService.RejectDraftAsync(draftId);
+            return deleted ? Ok(new { success = true }) : StatusCode(500, new { success = false });
         }
     }
 }

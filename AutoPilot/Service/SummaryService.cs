@@ -1024,52 +1024,228 @@ namespace AutoPilot.Service
             return response;
         }
 
-        public async Task<List<CategoryListItemDTO>> GetCategoryListAsync()
+        public async Task<TriageRunResult> TriageInboxAsync()
         {
-            var store = await _healthStore.LoadAsync();
-            var custom = store.CustomCategories ?? [];
+            var messages = await _graphClient.GetAsync(
+                "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$select=subject,from,body,receivedDateTime,isRead&$top=15"
+            );
+            var raw = await messages.Content.ReadAsStringAsync();
+            var parsed = JsonSerializer.Deserialize<RecieveEmailDTO>(raw,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
-            return DefaultCategories
-                .Select(c => new CategoryListItemDTO { Name = c, IsCustom = false })
-                .Concat(custom.Select(c => new CategoryListItemDTO { Name = c, IsCustom = true }))
-                .ToList();
+            var emails = parsed?.Value ?? [];
+            var results = new List<TriageEmailResult>();
+
+            foreach (var email in emails)
+            {
+                var result = await AnalyzeEmailAsync(email);
+                results.Add(result);
+            }
+
+            return new TriageRunResult
+            {
+                Results = results,
+                TotalAnalyzed = results.Count,
+                DraftsPending = results.Count(r => r.DraftId != null),
+                TasksCreated = results.Count(r => r.Action == "task_needed" && r.TaskText != null),
+                NeedReview = results.Count(r => r.NeedsReview)
+            };
+        }
+        
+        private async Task<TriageEmailResult> AnalyzeEmailAsync(ValueDTO email)
+        {
+            var fromName = email.From?.EmailAddress?.Name ?? "Unknown";
+            var fromAddr = email.From?.EmailAddress?.Address ?? "";
+            var subject = email.Subject ?? "No Subject";
+            var bodyText = CapString(StripHtml(email.Body?.Content ?? ""), 600);
+            var received = FormatReceivedTime(email.ReceivedDateTime);
+
+            var result = new TriageEmailResult
+            {
+                Id = email.Id ?? "",
+                Subject = subject,
+                From = fromName,
+                FromAddress = fromAddr,
+                Preview = CapString(bodyText, 120),
+                ReceivedTime = received,
+            };
+
+            var systemPrompt = """
+                You are an intelligent email triage assistant. Analyze the email and decide the best action.
+
+                Respond with ONLY valid JSON (no markdown, no code fences) in this exact format:
+                {
+                  "action": "reply_needed",
+                  "confidence": 0.85,
+                  "reasoning": "one sentence explaining why",
+                  "draftContent": "full draft text if reply_needed or forward_needed, else null",
+                  "draftTo": "email address if forward_needed, else null",
+                  "taskText": "task description if task_needed, else null"
+                }
+
+                Action rules:
+                - "reply_needed": email clearly expects a response from us (question, request, invitation)
+                - "forward_needed": another team or person should handle this (wrong recipient, specialized request)
+                - "task_needed": we need to complete an action (fill a form, submit something, schedule something)
+                - "info_only": no action needed, purely informational (newsletters, confirmations, FYI)
+
+                Confidence rules:
+                - 0.90-1.00: completely clear, unambiguous action
+                - 0.70-0.89: likely correct, one dominant interpretation
+                - 0.50-0.69: uncertain, could go multiple ways
+                - below 0.50: very ambiguous, needs human review
+
+                For reply_needed: write a professional, concise reply draft. Start with a greeting.
+                For forward_needed: write a forwarding note explaining why you're forwarding and what needs to be done. Set draftTo to the best guessed team email based on context.
+                For task_needed: extract the specific task as a clear action sentence.
+                """;
+
+            var userPrompt = $"From: {fromName} <{fromAddr}>\nSubject: {subject}\n\n{bodyText}";
+
+            try
+            {
+                var llmRaw = await CallLLMAsync(systemPrompt, userPrompt);
+
+                // Strip markdown code fences if present
+                var json = Regex.Match(llmRaw, @"\{[\s\S]*\}").Value;
+                if (string.IsNullOrEmpty(json)) json = llmRaw;
+
+                var analysis = JsonSerializer.Deserialize<LlmTriageResult>(json,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                if (analysis == null)
+                {
+                    result.Action = "info_only";
+                    result.Confidence = 0.3;
+                    result.Reasoning = "Could not parse AI response.";
+                    result.NeedsReview = true;
+                    return result;
+                }
+
+                result.Action = analysis.action ?? "info_only";
+                result.Confidence = Math.Clamp(analysis.confidence, 0.0, 1.0);
+                result.Reasoning = analysis.reasoning ?? "";
+                result.NeedsReview = result.Confidence < 0.60;
+                result.TaskText = analysis.taskText;
+
+                // Create Outlook draft if confidence is sufficient
+                if (!result.NeedsReview && analysis.draftContent != null &&
+                    (result.Action == "reply_needed" || result.Action == "forward_needed"))
+                {
+                    var toAddress = result.Action == "reply_needed" ? fromAddr : (analysis.draftTo ?? fromAddr);
+                    var draftSubject = result.Action == "reply_needed" ? $"Re: {subject}" : $"Fwd: {subject}";
+
+                    var (draftId, draftBody) = await CreateOutlookDraftAsync(
+                        draftSubject, analysis.draftContent, toAddress);
+
+                    result.DraftId = draftId;
+                    result.DraftSubject = draftSubject;
+                    result.DraftBody = draftBody;
+                    result.DraftTo = toAddress;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Triage error for '{subject}': {ex.Message}");
+                result.Action = "info_only";
+                result.Confidence = 0.3;
+                result.Reasoning = "Analysis failed. Manual review recommended.";
+                result.NeedsReview = true;
+            }
+
+            return result;
         }
 
-        // User-initiated: called when someone adds a folder from the Workflow Monitor UI.
-        // Creates the matching Outlook folder immediately so it's ready for AI categorization.
-        public async Task<CreateCategoryResultDTO> CreateCategoryAsync(string name)
+        private async Task<(string? draftId, string? draftBody)> CreateOutlookDraftAsync(
+            string subject, string body, string toAddress)
         {
-            name = name.Trim();
-            if (string.IsNullOrEmpty(name))
-                return new CreateCategoryResultDTO { Success = false, Error = "Folder name is required." };
+            var draftPayload = new
+            {
+                subject,
+                body = new { contentType = "Text", content = body },
+                toRecipients = new[]
+                {
+                    new { emailAddress = new { address = toAddress } }
+                }
+            };
 
-            var store = await _healthStore.LoadAsync();
-            store.CustomCategories ??= [];
+            var content = new StringContent(
+                JsonSerializer.Serialize(draftPayload), Encoding.UTF8, "application/json");
 
-            if (ResolveCategories(store).Any(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase)))
-                return new CreateCategoryResultDTO { Success = false, Error = $"A folder named \"{name}\" already exists." };
+            var response = await _graphClient.PostAsync(
+                "https://graph.microsoft.com/v1.0/me/messages", content);
 
-            var folderId = await GetOrCreateFolderId(name);
-            if (string.IsNullOrEmpty(folderId))
-                return new CreateCategoryResultDTO { Success = false, Error = "Could not create the Outlook folder." };
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"Draft creation failed: {response.StatusCode}");
+                return (null, null);
+            }
 
-            store.CustomCategories.Add(name);
-            await _healthStore.SaveAsync(store);
-
-            return new CreateCategoryResultDTO { Success = true };
+            var responseText = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(responseText);
+            var id = doc.RootElement.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+            return (id, body);
         }
 
-        // Only removes user-created folders from tracking — default categories aren't deletable.
-        // The underlying Outlook folder (and any emails in it) is left untouched.
-        public async Task<bool> DeleteCategoryAsync(string name)
+        public async Task<bool> ApproveDraftAsync(string draftId, string? editedBody, string? editedSubject, string? editedTo)
         {
-            var store = await _healthStore.LoadAsync();
-            store.CustomCategories ??= [];
+            var updatePayload = new Dictionary<string, object>();
 
-            var removed = store.CustomCategories.RemoveAll(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase)) > 0;
-            if (removed) await _healthStore.SaveAsync(store);
+            if (!string.IsNullOrWhiteSpace(editedBody))
+            {
+                updatePayload["body"] = new
+                {
+                    contentType = "Text",
+                    content = editedBody
+                };
+            }
 
-            return removed;
+            if (!string.IsNullOrWhiteSpace(editedSubject))
+            {
+                updatePayload["subject"] = editedSubject;
+            }
+
+            if (!string.IsNullOrWhiteSpace(editedTo))
+            {
+                updatePayload["toRecipients"] = new[]
+                {
+                    new
+                    {
+                        emailAddress = new
+                        {
+                            address = editedTo
+                        }
+                    }
+                };
+            }
+
+            if (updatePayload.Count > 0)
+            {
+                var patchReq = new HttpRequestMessage(
+                    HttpMethod.Patch,
+                    $"https://graph.microsoft.com/v1.0/me/messages/{draftId}")
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(updatePayload),
+                        Encoding.UTF8,
+                        "application/json")
+                };
+
+                await _graphClient.SendAsync(patchReq);
+            }
+
+            var sendResponse = await _graphClient.PostAsync(
+                $"https://graph.microsoft.com/v1.0/me/messages/{draftId}/send",
+                new StringContent(""));
+
+            return sendResponse.IsSuccessStatusCode;
+        }
+
+        public async Task<bool> RejectDraftAsync(string draftId)
+        {
+            var response = await _graphClient.DeleteAsync(
+                $"https://graph.microsoft.com/v1.0/me/messages/{draftId}");
+            return response.IsSuccessStatusCode;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -1087,19 +1263,19 @@ namespace AutoPilot.Service
                     await RefreshHealthMonitorAsync();
 
                     // Run summary once per day at 9 AM
-                    var now = DateTime.Now;
+                    // var now = DateTime.Now;
 
-                    if (now.Hour >= 9 && lastSummaryRun.Date != now.Date)
-                    {
-                        Console.WriteLine("Sending Daily Summary...");
+                    // if (now.Hour >= 9 && lastSummaryRun.Date != now.Date)
+                    // {
+                    //     Console.WriteLine("Sending Daily Summary...");
 
-                        var recentEmails = await GetRecentEmailsAsync();
-                        var getBotSummary = await GetBotEmailSummary(recentEmails);
+                    //     var recentEmails = await GetRecentEmailsAsync();
+                    //     var getBotSummary = await GetBotEmailSummary(recentEmails);
 
-                        await SendTasksEmailToOutLook(getBotSummary);
+                    //     await SendTasksEmailToOutLook(getBotSummary);
 
-                        lastSummaryRun = now;
-                    }
+                    //     lastSummaryRun = now;
+                    // }
                 }
                 catch (Exception ex)
                 {

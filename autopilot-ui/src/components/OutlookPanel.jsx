@@ -14,10 +14,16 @@ export default function OutlookPanel() {
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
   const [folders, setFolders] = useState([])
-  const [openMenu, setOpenMenu]   = useState(null)   // email id whose menu is open
-  const [moving, setMoving]       = useState({})     // { [emailId]: true }
-  const [moved, setMoved]         = useState({})     // { [emailId]: folderName }
-  const [toast, setToast]         = useState(null)   // { message, ok }
+  const [triageData, setTriageData] = useState({})
+  const [expandedDrafts, setExpandedDrafts] = useState({})
+  const [openMenu, setOpenMenu] = useState(null)   // email id whose menu is open
+  const [moving, setMoving] = useState({})     // { [emailId]: true }
+  const [moved, setMoved] = useState({})     // { [emailId]: folderName }
+  const [toast, setToast] = useState(null)   // { message, ok }
+
+  const [subjects, setSubjects] = useState({})
+  const [recipients, setRecipients] = useState({})
+  const [draftBodies, setDraftBodies] = useState({})
 
   useEffect(() => {
     fetch('/api/emails/list')
@@ -29,6 +35,21 @@ export default function OutlookPanel() {
     fetch('/api/folders')
       .then(r => r.ok ? r.json() : Promise.reject())
       .then(data => setFolders(data))
+      .catch(() => {})
+
+    fetch('/api/triage/run', {
+          method: 'POST'
+        })
+      .then(r => (r.ok ? r.json() : Promise.reject()))
+      .then(data => {
+        const map = {}
+
+        data.results.forEach(item => {
+          map[item.id] = item
+        })
+
+        setTriageData(map)
+      })
       .catch(() => {})
   }, [])
 
@@ -86,6 +107,73 @@ export default function OutlookPanel() {
     }
   }
 
+  async function approveDraft(emailId, recipient, subject, body) {
+  const triage = triageData[emailId]
+
+  if (!triage?.draftId) return
+
+  try {
+    const res = await fetch('/api/triage/approve', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        draftId: triage.draftId,
+        editedBody: body,
+        editedSubject: subject, 
+        editedTo: recipient,
+      }),
+    })
+
+
+    if (res.ok) {
+      setTriageData(prev => {
+        const next = { ...prev }
+        delete next[emailId]
+        return next
+      })
+
+      showToast('Draft approved and sent')
+    } else {
+      showToast('Failed to send draft', false)
+    }
+  } catch {
+    showToast('Network error', false)
+  }
+}
+
+async function rejectDraft(emailId) {
+  const triage = triageData[emailId]
+
+  if (!triage?.draftId) return
+
+  try {
+    const res = await fetch(
+      `/api/triage/draft/${triage.draftId}`,
+      {
+        method: 'DELETE',
+      }
+    )
+
+    console.log("Rejected...")
+
+    if (res.ok) {
+      setTriageData(prev => {
+        const next = { ...prev }
+        delete next[emailId]
+        return next
+      })
+
+      showToast('Draft rejected')
+    } else {
+      showToast('Failed to reject draft', false)
+    }
+  } catch {
+    showToast('Network error', false)
+  }
+}
+
   const unreadCount = emails.filter(e => e.unread).length
 
   return (
@@ -116,6 +204,7 @@ export default function OutlookPanel() {
             const isMoving  = !!moving[email.id]
             const movedTo   = moved[email.id]
             const menuOpen  = openMenu === email.id
+            const triage = triageData[email.id]
 
             return (
               <div
@@ -146,6 +235,24 @@ export default function OutlookPanel() {
                     {email.subject}
                   </p>
                   <p className="text-xs text-slate-400 truncate mt-0.5">{email.preview}</p>
+                  {triage && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+
+                        setExpandedDrafts(prev => ({
+                          ...prev,
+                          [email.id]: !prev[email.id],
+                        }))
+                      }}
+                      className="mt-2 inline-flex items-center gap-2 rounded-lg bg-slate-100 text-slate-700 px-2.5 py-1 text-xs font-medium hover:bg-slate-200"
+                    >
+                      {triage.action?.replace('_', ' ')}
+                      <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold">
+                        {triage.draftId ? 'Draft Ready' : 'Prepare Draft'}
+                      </span>
+                    </button>
+                  )}
                 </div>
 
                 {/* Move button */}
@@ -193,6 +300,112 @@ export default function OutlookPanel() {
                     </div>
                   )}
                 </div>
+
+                {triage && expandedDrafts[email.id] && (
+                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex items-center gap-2 mb-4">
+                      <span className="px-2 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-medium">
+                        {triage.action?.replace('_', ' ')}
+                      </span>
+
+                      <span className="text-xs text-slate-500">
+                        {(triage.confidence * 100).toFixed(0)}% confidence
+                      </span>
+
+                      {triage.needsReview && (
+                        <span className="px-2 py-1 rounded-full bg-amber-100 text-amber-700 text-xs font-medium">
+                          Review Required
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="mb-3">
+                      <label className="block text-xs font-medium text-slate-500 mb-1">
+                        Subject
+                      </label>
+
+                      <input
+                        type="text"
+                        value={subjects[email.id] ?? triage.draftSubject ?? ''}
+                        onChange={(e) =>
+                          setSubjects(prev => ({
+                            ...prev,
+                            [email.id]: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-lg border border-slate-200 px-3 py-2 bg-white text-sm"
+                      />
+                    </div>
+
+                    <div className="mb-3">
+                      <label className="block text-xs font-medium text-slate-500 mb-1">
+                        Recipient
+                      </label>
+
+                      <input
+                        type="text"
+                        value={recipients[email.id] ?? triage.draftTo ?? ''}
+                        onChange={(e) =>
+                          setRecipients(prev => ({
+                            ...prev,
+                            [email.id]: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-lg border border-slate-200 px-3 py-2 bg-white text-sm"
+                      />
+                    </div>
+
+                    <div className="mb-3">
+                      <label className="block text-xs font-medium text-slate-500 mb-1">
+                        Draft Message
+                      </label>
+
+                      <textarea
+                        value={draftBodies[email.id] ?? triage.draftBody ?? ''}
+                        onChange={(e) =>
+                          setDraftBodies(prev => ({
+                            ...prev,
+                            [email.id]: e.target.value,
+                          }))
+                        }
+                        className="w-full min-h-[180px] rounded-lg border border-slate-200 bg-white p-3 text-sm"
+                      />
+                    </div>
+
+                    <div className="mb-4 rounded-lg border border-slate-200 bg-white p-3">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                        AI Reasoning
+                      </div>
+
+                      <p className="text-sm text-slate-600">
+                        {triage.reasoning}
+                      </p>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => 
+                          approveDraft(
+                            email.id,
+                            recipients[email.id] ?? triage.draftTo,     
+                            subjects[email.id] ?? triage.draftSubject,
+                            draftBodies[email.id] ?? triage.draftBody
+                          )
+                        }
+                        className="px-2 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+                      >
+                        Approve & Send
+                      </button>
+
+                      <button
+                        onClick={() => rejectDraft(email.id)}
+                        className="px-4 py-2 rounded-lg bg-rose-600 text-white hover:bg-rose-700"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {email.unread && !menuOpen && (
                   <div className="w-1.5 h-1.5 rounded-full bg-slate-700 shrink-0 mt-2 absolute right-4 top-4 group-hover:hidden" />
