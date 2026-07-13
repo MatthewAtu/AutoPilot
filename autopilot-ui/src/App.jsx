@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Group, Panel as ResizablePanel, Separator } from 'react-resizable-panels'
+import { Group, Panel as ResizablePanel, Separator, useGroupRef } from 'react-resizable-panels'
 import logo from './assets/logo-White.png'
 import OutlookPanel from './components/OutlookPanel'
 import ChatbotPanel from './components/ChatbotPanel'
@@ -13,8 +13,18 @@ export default function App() {
   const [injectedTasks, setInjectedTasks] = useState([])
   const [activeView, setActiveView] = useState('dashboard')
 
+  const rowsGroupRef = useGroupRef()
+  const topRowGroupRef = useGroupRef()
+  const bottomRowGroupRef = useGroupRef()
+
   function handleTasksAdded(tasks) {
     setInjectedTasks(prev => [...prev, ...tasks])
+  }
+
+  function resetLayout() {
+    rowsGroupRef.current?.setLayout({ 'row-top': 50, 'row-bottom': 50 })
+    topRowGroupRef.current?.setLayout({ outlook: 50, chatbot: 50 })
+    bottomRowGroupRef.current?.setLayout({ calendar: 50, tasks: 50 })
   }
 
   return (
@@ -79,30 +89,41 @@ export default function App() {
       ) : (
         <main className="flex-1 px-6 py-6">
           <section className="max-w-5xl space-y-4 pb-6">
-            <h1 className="text-3xl font-semibold tracking-tight text-slate-950">AutoPilot dashboard</h1>
+            <div className="flex items-center justify-between gap-4">
+              <h1 className="text-3xl font-semibold tracking-tight text-slate-950">AutoPilot dashboard</h1>
+              <button
+                onClick={resetLayout}
+                className="hidden md:flex items-center gap-1.5 rounded-full border border-slate-200 text-slate-600 px-3 py-1.5 text-xs font-medium hover:bg-slate-100 hover:text-slate-900 transition-colors shrink-0"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Reset Layout
+              </button>
+            </div>
           </section>
 
           <div className="hidden md:block md:h-[calc(100vh-260px)]">
-            <Group orientation="vertical" className="gap-2">
-              <ResizablePanel defaultSize={50} minSize={20}>
-                <Group orientation="horizontal" className="gap-2">
-                  <ResizablePanel defaultSize={50} minSize={20}>
+            <Group orientation="vertical" className="gap-2" groupRef={rowsGroupRef}>
+              <ResizablePanel id="row-top" defaultSize={50} minSize={20}>
+                <Group orientation="horizontal" className="gap-2" groupRef={topRowGroupRef}>
+                  <ResizablePanel id="outlook" defaultSize={50} minSize={20}>
                     <Panel><OutlookPanel /></Panel>
                   </ResizablePanel>
                   <ResizeHandle orientation="horizontal" />
-                  <ResizablePanel defaultSize={50} minSize={20}>
+                  <ResizablePanel id="chatbot" defaultSize={50} minSize={20}>
                     <Panel><ChatbotPanel /></Panel>
                   </ResizablePanel>
                 </Group>
               </ResizablePanel>
               <ResizeHandle orientation="vertical" />
-              <ResizablePanel defaultSize={50} minSize={20}>
-                <Group orientation="horizontal" className="gap-2">
-                  <ResizablePanel defaultSize={50} minSize={20}>
+              <ResizablePanel id="row-bottom" defaultSize={50} minSize={20}>
+                <Group orientation="horizontal" className="gap-2" groupRef={bottomRowGroupRef}>
+                  <ResizablePanel id="calendar" defaultSize={50} minSize={20}>
                     <Panel><CalendarPanel /></Panel>
                   </ResizablePanel>
                   <ResizeHandle orientation="horizontal" />
-                  <ResizablePanel defaultSize={50} minSize={20}>
+                  <ResizablePanel id="tasks" defaultSize={50} minSize={20}>
                     <Panel><TaskListPanel injectedTasks={injectedTasks} /></Panel>
                   </ResizablePanel>
                 </Group>

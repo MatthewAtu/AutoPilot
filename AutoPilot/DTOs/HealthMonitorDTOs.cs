@@ -28,6 +28,7 @@ namespace AutoPilot.DTOs
     {
         public Dictionary<string, TrackedEmailRecord> Emails { get; set; } = new();
         public List<HealthHistorySnapshot> History { get; set; } = [];
+        public List<string> CustomCategories { get; set; } = [];
     }
 
     // API response shapes
@@ -93,5 +94,22 @@ namespace AutoPilot.DTOs
         public DateTime ReceivedDateTime { get; set; }
         public string Body { get; set; } = "";
         public string? WebLink { get; set; }
+    }
+
+    public class CategoryListItemDTO
+    {
+        public string Name { get; set; } = "";
+        public bool IsCustom { get; set; }
+    }
+
+    public class CreateCategoryRequestDTO
+    {
+        public string Name { get; set; } = "";
+    }
+
+    public class CreateCategoryResultDTO
+    {
+        public bool Success { get; set; }
+        public string? Error { get; set; }
     }
 }

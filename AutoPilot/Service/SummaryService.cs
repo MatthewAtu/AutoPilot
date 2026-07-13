@@ -19,7 +19,7 @@ namespace AutoPilot.Service
         private readonly HealthMonitorStore _healthStore;
         private readonly DailyTaskListStore _taskListStore;
 
-        private static readonly string[] Categories =
+        private static readonly string[] DefaultCategories =
         [
             "Finance",
             "Requests",
@@ -27,6 +27,14 @@ namespace AutoPilot.Service
             "Approvals",
             "General Inquiry"
         ];
+
+        // Default categories plus any user-created folders, deduped so a custom folder
+        // that happens to match a default name (any case) doesn't show up twice.
+        private static List<string> ResolveCategories(HealthMonitorStoreData store) =>
+            DefaultCategories
+                .Concat(store.CustomCategories ?? [])
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
         public SummaryService(IHttpClientFactory factory, IConfiguration config, HealthMonitorStore healthStore, DailyTaskListStore taskListStore)
         {
@@ -650,6 +658,8 @@ namespace AutoPilot.Service
             var messages = await GetFolderMessagesStructured(folderId);
             if (messages == null || messages.Count == 0) return result;
 
+            var categories = ResolveCategories(await _healthStore.LoadAsync());
+
             var emailText = string.Join("\n\n", messages.Select(e =>
                 $"Id: {e.Id}\n" +
                 $"Subject: {e.Subject ?? "No Subject"}\n" +
@@ -660,7 +670,7 @@ namespace AutoPilot.Service
 
             Your job is to classify each email into exactly one of the following categories:
 
-            {string.Join("\n", Categories.Select(c => $"- {c}"))}
+            {string.Join("\n", categories.Select(c => $"- {c}"))}
 
             Rules:
             1. Return only the category name per email.
@@ -685,7 +695,8 @@ namespace AutoPilot.Service
                 var msg = messages[i];
                 if (string.IsNullOrEmpty(msg.Id)) continue;
 
-                var validCategory = Categories.Contains(category) ? category : "General Inquiry";
+                var validCategory = categories.FirstOrDefault(c => string.Equals(c, category, StringComparison.OrdinalIgnoreCase))
+                    ?? "General Inquiry";
                 var destinationFolderId = await GetOrCreateFolderId(validCategory);
 
                 var moved = !string.IsNullOrEmpty(destinationFolderId) &&
@@ -838,11 +849,12 @@ namespace AutoPilot.Service
         public async Task RefreshHealthMonitorAsync()
         {
             var store = await _healthStore.LoadAsync();
+            var categories = ResolveCategories(store);
             var now = DateTime.UtcNow;
             var seenIds = new HashSet<string>();
             var scannedCategories = new HashSet<string>();
 
-            foreach (var category in Categories)
+            foreach (var category in categories)
             {
                 var folderId = await GetOrCreateFolderId(category);
                 if (string.IsNullOrEmpty(folderId)) continue;
@@ -919,7 +931,7 @@ namespace AutoPilot.Service
 
             var overdueByCategory = new Dictionary<string, int>();
             var warningByCategory = new Dictionary<string, int>();
-            foreach (var category in Categories)
+            foreach (var category in categories)
             {
                 var active = store.Emails.Values.Where(e => e.Category == category && e.ResolvedAt == null).ToList();
                 overdueByCategory[category] = active.Count(e => DetermineStatus(e, now) == "Overdue");
@@ -946,11 +958,12 @@ namespace AutoPilot.Service
         public async Task<HealthMonitorResponseDTO> GetHealthMonitorSnapshot()
         {
             var store = await _healthStore.LoadAsync();
+            var categories = ResolveCategories(store);
             var now = DateTime.UtcNow;
 
             var response = new HealthMonitorResponseDTO { GeneratedAt = now };
 
-            foreach (var category in Categories)
+            foreach (var category in categories)
             {
                 var active = store.Emails.Values
                     .Where(e => e.Category == category && e.ResolvedAt == null)

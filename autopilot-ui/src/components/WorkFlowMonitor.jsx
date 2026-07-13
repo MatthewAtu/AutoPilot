@@ -349,6 +349,12 @@ export default function WorkflowMonitor() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError]     = useState(null)
 
+  const [categories, setCategories]       = useState([])
+  const [newFolderName, setNewFolderName] = useState('')
+  const [addingFolder, setAddingFolder]   = useState(false)
+  const [folderError, setFolderError]     = useState(null)
+  const [removingFolder, setRemovingFolder] = useState(() => new Set())
+
   const load = useCallback(async () => {
     setLoading(true); setError(null)
     try {
@@ -370,6 +376,51 @@ export default function WorkflowMonitor() {
     finally { setPendingLoading(false) }
   }, [])
 
+  const loadCategories = useCallback(async () => {
+    try {
+      const res = await fetch('/api/health-monitor/categories')
+      if (!res.ok) throw new Error()
+      setCategories(await res.json())
+    } catch { /* leave previous list in place */ }
+  }, [])
+
+  async function addFolder(e) {
+    e.preventDefault()
+    const name = newFolderName.trim()
+    if (!name) return
+
+    setAddingFolder(true); setFolderError(null)
+    try {
+      const res = await fetch('/api/health-monitor/categories', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        setFolderError(typeof body === 'string' ? body : 'Could not create that folder.')
+        return
+      }
+      setCategories(body)
+      setNewFolderName('')
+      await load()
+    } catch {
+      setFolderError('Could not reach the server.')
+    } finally {
+      setAddingFolder(false)
+    }
+  }
+
+  async function removeFolder(name) {
+    setRemovingFolder(prev => new Set(prev).add(name))
+    try {
+      const res = await fetch(`/api/health-monitor/categories/${encodeURIComponent(name)}`, { method: 'DELETE' })
+      if (res.ok) setCategories(await res.json())
+      await load()
+    } finally {
+      setRemovingFolder(prev => { const n = new Set(prev); n.delete(name); return n })
+    }
+  }
+
   async function runCategorization() {
     setCategorizing(true); setCatResult(null)
     try {
@@ -380,7 +431,7 @@ export default function WorkflowMonitor() {
     } finally { setCategorizing(false) }
   }
 
-  useEffect(() => { load(); loadPending() }, [load, loadPending])
+  useEffect(() => { load(); loadPending(); loadCategories() }, [load, loadPending, loadCategories])
 
   function toggleCategory(cat) {
     setExpanded(prev => { const n = new Set(prev); n.has(cat) ? n.delete(cat) : n.add(cat); return n })
@@ -668,6 +719,60 @@ export default function WorkflowMonitor() {
             )}
           </>
         )}
+
+        {/* ── Workflow Folders ── (always shown) */}
+        <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100">
+            <h2 className="text-sm font-semibold text-slate-900">Workflow Folders</h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Create your own folder to track a workflow the default categories don't cover — it's added to Outlook and to AI sorting immediately.
+            </p>
+          </div>
+
+          <div className="px-5 pt-4 flex flex-wrap gap-2">
+            {categories.map(cat => (
+              <span
+                key={cat.name}
+                className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium border ${
+                  cat.isCustom
+                    ? 'bg-violet-50 text-violet-700 border-violet-200'
+                    : 'bg-slate-50 text-slate-600 border-slate-200'
+                }`}
+              >
+                {cat.name}
+                {cat.isCustom && (
+                  <button
+                    onClick={() => removeFolder(cat.name)}
+                    disabled={removingFolder.has(cat.name)}
+                    title={`Remove ${cat.name}`}
+                    className="text-violet-400 hover:text-violet-700 disabled:opacity-40 transition-colors"
+                  >
+                    {removingFolder.has(cat.name) ? '…' : '×'}
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+
+          <form onSubmit={addFolder} className="flex items-center gap-2 px-5 py-4">
+            <input
+              type="text"
+              value={newFolderName}
+              onChange={e => { setNewFolderName(e.target.value); setFolderError(null) }}
+              placeholder="New folder name, e.g. Legal"
+              maxLength={100}
+              className="flex-1 max-w-xs text-sm px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-300"
+            />
+            <button
+              type="submit"
+              disabled={addingFolder || !newFolderName.trim()}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shrink-0"
+            >
+              {addingFolder ? 'Adding…' : 'Add Folder'}
+            </button>
+            {folderError && <span className="text-xs text-rose-600">{folderError}</span>}
+          </form>
+        </section>
 
         {/* ── AI Categorization inbox ── (always shown) */}
         <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
