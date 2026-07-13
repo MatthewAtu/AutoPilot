@@ -53,7 +53,7 @@ export default function TaskListPanel({ injectedTasks = [] }) {
           <svg className="w-4 h-4 text-slate-900" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
           </svg>
-          <h2 className="text-xs font-semibold text-slate-600 uppercase tracking-widest">Tasks</h2>
+          <h2 className="text-xs font-semibold text-slate-600 uppercase tracking-widest">Daily Tasks</h2>
         </div>
         {!loading && !error && pending.length > 0 && (
           <span className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full font-medium">

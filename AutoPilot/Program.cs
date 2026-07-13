@@ -30,6 +30,7 @@ builder.Services.AddHttpClient("groq", client =>
 });
 // builder.Services.AddScoped<GraphAuthService>();
 builder.Services.AddSingleton<HealthMonitorStore>();
+builder.Services.AddSingleton<DailyTaskListStore>();
 builder.Services.AddScoped<SummaryService>();
 builder.Services.AddHostedService<SummaryService>();
 

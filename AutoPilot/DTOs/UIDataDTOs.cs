@@ -26,6 +26,14 @@ namespace AutoPilot.DTOs
         public string Priority { get; set; } = "medium";
     }
 
+    // Generated once per UTC day from that day's emails, then served from cache
+    // for the rest of the day so the dashboard doesn't re-run the LLM on every load.
+    public class DailyTaskListData
+    {
+        public DateTime Date { get; set; }
+        public List<TaskItemDTO> Tasks { get; set; } = [];
+    }
+
     public class ChatRequestDTO
     {
         public string? Message { get; set; }

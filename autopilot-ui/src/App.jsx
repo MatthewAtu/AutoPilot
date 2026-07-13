@@ -79,10 +79,7 @@ export default function App() {
       ) : (
         <main className="flex-1 px-6 py-6">
           <section className="max-w-5xl space-y-4 pb-6">
-            <h1 className="text-3xl font-semibold tracking-tight text-slate-950">AutoPilot operations dashboard</h1>
-            <p className="text-base text-slate-600 max-w-3xl">
-              A unified OPS dashboard for email, chat, schedule and tasks aligned with the Ontario website styling.
-            </p>
+            <h1 className="text-3xl font-semibold tracking-tight text-slate-950">AutoPilot dashboard</h1>
           </section>
 
           <div className="hidden md:block md:h-[calc(100vh-260px)]">

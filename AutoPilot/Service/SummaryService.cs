@@ -17,6 +17,7 @@ namespace AutoPilot.Service
         private readonly string _provider;
         private readonly string _groqApiKey;
         private readonly HealthMonitorStore _healthStore;
+        private readonly DailyTaskListStore _taskListStore;
 
         private static readonly string[] Categories =
         [
@@ -27,12 +28,13 @@ namespace AutoPilot.Service
             "General Inquiry"
         ];
 
-        public SummaryService(IHttpClientFactory factory, IConfiguration config, HealthMonitorStore healthStore)
+        public SummaryService(IHttpClientFactory factory, IConfiguration config, HealthMonitorStore healthStore, DailyTaskListStore taskListStore)
         {
             _graphClient = factory.CreateClient("graph");
             _ollamaClient = factory.CreateClient("ollama");
             _groqClient = factory.CreateClient("groq");
             _healthStore = healthStore;
+            _taskListStore = taskListStore;
 
             var token = config["Graph:AccessToken"];
             _graphClient.DefaultRequestHeaders.Authorization =
@@ -135,8 +137,9 @@ namespace AutoPilot.Service
             if (_cachedEmailContext != null && DateTime.UtcNow < _emailCacheExpiry)
                 return _cachedEmailContext;
 
-            var raw = await GetRecentEmailsAsync();
-            _cachedEmailContext = CapString(raw, 800);
+            // GetRecentEmailsAsync already caps the text at 2000 chars; no need to re-truncate
+            // further here (an earlier 800-char re-cap was cutting most emails out entirely).
+            _cachedEmailContext = await GetRecentEmailsAsync();
             _emailCacheExpiry = DateTime.UtcNow.AddMinutes(5);
             return _cachedEmailContext;
         }
@@ -186,8 +189,38 @@ namespace AutoPilot.Service
             return parsed?.Message?.Content ?? "No response";
         }
 
+        // Matches an explicit date reference in a chat message ("Jul 12", "July 12, 2026", "7/12",
+        // "2026-07-12") or the words "today"/"yesterday", so date-specific questions can be answered
+        // from that day's actual emails instead of whatever happens to be in the recent-10 window.
+        private static readonly Regex DateMentionRegex = new(
+            @"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?\b" +
+            @"|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b" +
+            @"|\b\d{4}-\d{2}-\d{2}\b",
+            RegexOptions.IgnoreCase);
+
+        private static DateTime? ExtractDateFromMessage(string message, DateTime referenceNow)
+        {
+            var lower = message.ToLowerInvariant();
+            if (lower.Contains("yesterday")) return referenceNow.Date.AddDays(-1);
+            if (lower.Contains("today")) return referenceNow.Date;
+
+            var match = DateMentionRegex.Match(message);
+            if (!match.Success || !DateTime.TryParse(match.Value, out var parsed)) return null;
+
+            // "Jul 12" has no year in the input; DateTime.TryParse defaults it to the current year,
+            // which is already what we want since referenceNow.Year is "now".
+            if (!Regex.IsMatch(match.Value, @"\d{4}"))
+                parsed = new DateTime(referenceNow.Year, parsed.Month, parsed.Day);
+
+            return parsed.Date;
+        }
+
         public async Task<string> ChatAsync(string message)
         {
+            var mentionedDate = ExtractDateFromMessage(message, DateTime.Now);
+            if (mentionedDate.HasValue)
+                return await ChatAboutDateAsync(message, mentionedDate.Value);
+
             var emailContext = await GetEmailContextAsync();
 
             var systemPrompt =
@@ -198,24 +231,121 @@ namespace AutoPilot.Service
             return await CallLLMAsync(systemPrompt, message);
         }
 
+        private async Task<string> ChatAboutDateAsync(string message, DateTime date)
+        {
+            var emails = await GetEmailsOnDateAsync(date);
+            var dateLabel = date.ToString("MMM d, yyyy");
+
+            if (emails.Count == 0)
+                return $"You have no emails on {dateLabel}.";
+
+            var emailBlocks = emails.Select((e, i) =>
+                $"Email {i + 1}:\n" +
+                $"From: {e.From?.EmailAddress?.Name ?? "Unknown"}\n" +
+                $"Subject: {e.Subject ?? "No Subject"}\n" +
+                $"Body: {CapString(StripHtml(e.Body?.Content ?? ""), 1500)}"
+            );
+
+            var systemPrompt =
+                "You are AutoPilot, a concise AI assistant. " +
+                $"The user asked about their emails on {dateLabel}. Below is the FULL list of every " +
+                $"email actually received that day ({emails.Count} total) — summarize EVERY one of " +
+                "them individually as a separate numbered entry. Do not skip any email and do not " +
+                "invent emails that are not listed below.\n\n" +
+                $"EMAILS ON {dateLabel}:\n{string.Join("\n\n", emailBlocks)}";
+
+            return await CallLLMAsync(systemPrompt, message);
+        }
+
+        // Fetches inbox emails received within [startInclusive, endExclusive) (both UTC), paging
+        // through Graph's @odata.nextLink since a full day can exceed a single page of results.
+        private async Task<List<ValueDTO>> FetchInboxEmailsInRangeAsync(DateTime startInclusive, DateTime endExclusive)
+        {
+            var start = startInclusive.ToString("yyyy-MM-ddTHH:mm:ssZ");
+            var end = endExclusive.ToString("yyyy-MM-ddTHH:mm:ssZ");
+
+            var url = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages" +
+                       "?$select=subject,from,body,receivedDateTime,isRead" +
+                       $"&$filter=receivedDateTime ge {start} and receivedDateTime lt {end}" +
+                       "&$orderby=receivedDateTime desc&$top=100";
+
+            var allEmails = new List<ValueDTO>();
+            while (!string.IsNullOrEmpty(url))
+            {
+                var response = await _graphClient.GetAsync(url);
+                if (!response.IsSuccessStatusCode) break;
+
+                var raw = await response.Content.ReadAsStringAsync();
+                var parsed = JsonSerializer.Deserialize<RecieveEmailDTO>(raw,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                if (parsed?.Value != null) allEmails.AddRange(parsed.Value);
+                url = parsed?.NextLink ?? "";
+            }
+
+            return allEmails;
+        }
+
+        // Graph stores receivedDateTime in UTC, but the UI (and users) think in the server's local
+        // calendar day (FormatReceivedTime renders in local time). A naive UTC-day window silently
+        // misses/mismatches emails received near midnight, so convert the local day to its true UTC
+        // range before querying.
+        private static (DateTime StartUtc, DateTime EndUtc) LocalDayToUtcRange(DateTime localDate)
+        {
+            var startLocal = DateTime.SpecifyKind(localDate.Date, DateTimeKind.Unspecified);
+            var startUtc = TimeZoneInfo.ConvertTimeToUtc(startLocal, TimeZoneInfo.Local);
+            var endUtc = TimeZoneInfo.ConvertTimeToUtc(startLocal.AddDays(1), TimeZoneInfo.Local);
+            return (startUtc, endUtc);
+        }
+
+        // All inbox emails received on the given local calendar day, as structured data —
+        // used by the chatbot to answer date-specific questions per-email.
+        private async Task<List<ValueDTO>> GetEmailsOnDateAsync(DateTime date)
+        {
+            var (startUtc, endUtc) = LocalDayToUtcRange(date);
+            return await FetchInboxEmailsInRangeAsync(startUtc, endUtc);
+        }
+
+        // Fetches every inbox email received since the start of today (local calendar day).
+        private async Task<string> GetTodaysEmailsAsync()
+        {
+            var (startOfDay, endOfDay) = LocalDayToUtcRange(DateTime.Now.Date);
+            var allEmails = await FetchInboxEmailsInRangeAsync(startOfDay, endOfDay);
+
+            var emailText = allEmails.Count > 0
+                ? string.Join("\n\n", allEmails.Select(e =>
+                    $"From: {e.From?.EmailAddress?.Name ?? "Unknown"}\n" +
+                    $"Subject: {e.Subject ?? "No Subject"}\n" +
+                    $"Body: {e.Body?.Content ?? "No Content"}"
+                ))
+                : "No emails found.";
+
+            // Higher cap than the other 10-email flows: a full day's inbox is expected to be
+            // larger, but this still bounds the prompt size sent to the LLM.
+            return CapString(StripHtml(emailText), 8000);
+        }
+
+        // Tasks are generated once per local calendar day from that day's emails and cached in
+        // DailyTaskListStore, so re-opening the dashboard doesn't re-run the LLM every time.
         public async Task<List<TaskItemDTO>> GetTasksAsync()
         {
-            var emailText = await GetRecentEmailsAsync();
+            var today = DateTime.Now.Date;
+            var store = await _taskListStore.LoadAsync();
+            if (store.Date == today) return store.Tasks;
+
+            var emailText = await GetTodaysEmailsAsync();
             var botSummary = await GetBotEmailSummary(emailText);
             var botText = botSummary.Message?.Body?.Content ?? "";
 
             var tasksSection = Regex.Match(botText, @"Tasks:\s*([\s\S]+?)(?:\n\n|$)");
-            if (!tasksSection.Success) return [];
+            var tasks = tasksSection.Success
+                ? Regex.Matches(tasksSection.Groups[1].Value, @"\d+\.\s+(.+)")
+                    .Select(m => ParseTask(m.Groups[1].Value))
+                    .ToList()
+                : [];
 
-            var taskMatches = Regex.Matches(tasksSection.Groups[1].Value, @"\d+\.\s+(.+)");
-
-            return taskMatches
-                .Select(m => new TaskItemDTO
-                {
-                    Text = m.Groups[1].Value.Trim(),
-                    Priority = DetectPriority(m.Groups[1].Value)
-                })
-                .ToList();
+            await _taskListStore.SaveAsync(new DailyTaskListData { Date = today, Tasks = tasks });
+            return tasks;
         }
 
         public async Task<bool> SendTasksEmailToOutLook(SendEmailDTO email)
@@ -235,16 +365,26 @@ namespace AutoPilot.Service
 
         public async Task<SendEmailDTO> GetBotEmailSummary(string prompt)
         {
+            var today = DateTime.Now.ToString("yyyy-MM-dd");
+
             var systemPrompt =
-                "You are an AI productivity assistant. Analyze emails and extract useful information.\n" +
+                $"You are an AI productivity assistant. Today's date is {today}. Analyze emails and extract useful information.\n" +
                 "Do NOT reply to the emails. ONLY extract insights.\n" +
-                "Ignore duplicates. Identify actionable tasks and assign priority.\n" +
+                "Ignore duplicates. Identify actionable tasks.\n" +
                 "Only list a task if it is explicitly requested or assigned in the emails below. " +
                 "Do NOT infer, invent, or add tasks that were not actually mentioned, even if they seem like " +
                 "reasonable next steps. If there are no actionable tasks, write exactly: Tasks:\nNone\n\n" +
+                "For each task, judge priority using the SOURCE EMAIL's own urgency signals, not just the " +
+                "rephrased task wording:\n" +
+                "- High: the email uses urgency words (e.g. \"URGENT\", \"ASAP\", \"immediately\", \"critical\"), " +
+                "explicitly says something is overdue / past due, or references a due date that is on or before " +
+                $"{today}.\n" +
+                "- Medium: the email references a deadline or timeframe that has NOT yet passed " +
+                "(e.g. \"by Friday\", \"this week\", \"end of month\").\n" +
+                "- Low: no explicit urgency word or deadline is mentioned.\n" +
                 "Output format (STRICT):\n" +
                 "Summary:\n- <brief summary>\n\n" +
-                "Tasks:\n1. <task 1>\n2. <task 2>\n3. <task 3>";
+                "Tasks:\n1. <task 1> [Priority: High|Medium|Low]\n2. <task 2> [Priority: High|Medium|Low]\n3. <task 3> [Priority: High|Medium|Low]";
 
             var userMessage = $"--- EMAILS TO SUMMARIZE ---\n{prompt}\n--- END OF EMAILS ---";
 
@@ -292,11 +432,7 @@ namespace AutoPilot.Service
             var taskMatches = Regex.Matches(text, @"\d+\.\s+(.+)");
 
             return taskMatches
-                .Select(m => new TaskItemDTO
-                {
-                    Text = m.Groups[1].Value.Trim(),
-                    Priority = DetectPriority(m.Groups[1].Value)
-                })
+                .Select(m => ParseTask(m.Groups[1].Value))
                 .ToList();
         }
 
@@ -941,10 +1077,25 @@ namespace AutoPilot.Service
             return dt.ToString("h:mm tt");
         }
 
+        private static readonly Regex PriorityTagRegex = new(@"\s*\[\s*Priority\s*:\s*(High|Medium|Low)\s*\]\s*", RegexOptions.IgnoreCase);
+
+        // The LLM is asked to append an inline "[Priority: High|Medium|Low]" tag per task.
+        // When present, trust it (and strip it from the displayed text) instead of re-guessing
+        // priority from keywords — the model has the full email context, the keyword heuristic doesn't.
+        private static TaskItemDTO ParseTask(string raw)
+        {
+            var tagMatch = PriorityTagRegex.Match(raw);
+            if (!tagMatch.Success)
+                return new TaskItemDTO { Text = raw.Trim(), Priority = DetectPriority(raw) };
+
+            var text = PriorityTagRegex.Replace(raw, "").Trim();
+            return new TaskItemDTO { Text = text, Priority = tagMatch.Groups[1].Value.ToLowerInvariant() };
+        }
+
         private static string DetectPriority(string text)
         {
             var lower = text.ToLower();
-            if (lower.Contains("urgent") || lower.Contains("asap") || lower.Contains("immediately") || lower.Contains("today") || lower.Contains("deadline"))
+            if (lower.Contains("urgent") || lower.Contains("asap") || lower.Contains("immediately") || lower.Contains("today") || lower.Contains("deadline") || lower.Contains("overdue") || lower.Contains("past due") || lower.Contains("critical"))
                 return "high";
             if (lower.Contains("soon") || lower.Contains("week") || lower.Contains("friday") || lower.Contains("review") || lower.Contains("prepare"))
                 return "medium";
