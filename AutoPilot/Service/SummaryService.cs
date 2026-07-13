@@ -19,7 +19,7 @@ namespace AutoPilot.Service
         private readonly HealthMonitorStore _healthStore;
         private readonly DailyTaskListStore _taskListStore;
 
-        private static readonly string[] Categories =
+        private static readonly string[] DefaultCategories =
         [
             "Finance",
             "Requests",
@@ -27,6 +27,14 @@ namespace AutoPilot.Service
             "Approvals",
             "General Inquiry"
         ];
+
+        // Default categories plus any user-created folders, deduped so a custom folder
+        // that happens to match a default name (any case) doesn't show up twice.
+        private static List<string> ResolveCategories(HealthMonitorStoreData store) =>
+            DefaultCategories
+                .Concat(store.CustomCategories ?? [])
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
         public SummaryService(IHttpClientFactory factory, IConfiguration config, HealthMonitorStore healthStore, DailyTaskListStore taskListStore)
         {
@@ -650,6 +658,8 @@ namespace AutoPilot.Service
             var messages = await GetFolderMessagesStructured(folderId);
             if (messages == null || messages.Count == 0) return result;
 
+            var categories = ResolveCategories(await _healthStore.LoadAsync());
+
             var emailText = string.Join("\n\n", messages.Select(e =>
                 $"Id: {e.Id}\n" +
                 $"Subject: {e.Subject ?? "No Subject"}\n" +
@@ -660,7 +670,7 @@ namespace AutoPilot.Service
 
             Your job is to classify each email into exactly one of the following categories:
 
-            {string.Join("\n", Categories.Select(c => $"- {c}"))}
+            {string.Join("\n", categories.Select(c => $"- {c}"))}
 
             Rules:
             1. Return only the category name per email.
@@ -685,7 +695,8 @@ namespace AutoPilot.Service
                 var msg = messages[i];
                 if (string.IsNullOrEmpty(msg.Id)) continue;
 
-                var validCategory = Categories.Contains(category) ? category : "General Inquiry";
+                var validCategory = categories.FirstOrDefault(c => string.Equals(c, category, StringComparison.OrdinalIgnoreCase))
+                    ?? "General Inquiry";
                 var destinationFolderId = await GetOrCreateFolderId(validCategory);
 
                 var moved = !string.IsNullOrEmpty(destinationFolderId) &&
@@ -838,11 +849,12 @@ namespace AutoPilot.Service
         public async Task RefreshHealthMonitorAsync()
         {
             var store = await _healthStore.LoadAsync();
+            var categories = ResolveCategories(store);
             var now = DateTime.UtcNow;
             var seenIds = new HashSet<string>();
             var scannedCategories = new HashSet<string>();
 
-            foreach (var category in Categories)
+            foreach (var category in categories)
             {
                 var folderId = await GetOrCreateFolderId(category);
                 if (string.IsNullOrEmpty(folderId)) continue;
@@ -919,7 +931,7 @@ namespace AutoPilot.Service
 
             var overdueByCategory = new Dictionary<string, int>();
             var warningByCategory = new Dictionary<string, int>();
-            foreach (var category in Categories)
+            foreach (var category in categories)
             {
                 var active = store.Emails.Values.Where(e => e.Category == category && e.ResolvedAt == null).ToList();
                 overdueByCategory[category] = active.Count(e => DetermineStatus(e, now) == "Overdue");
@@ -946,11 +958,12 @@ namespace AutoPilot.Service
         public async Task<HealthMonitorResponseDTO> GetHealthMonitorSnapshot()
         {
             var store = await _healthStore.LoadAsync();
+            var categories = ResolveCategories(store);
             var now = DateTime.UtcNow;
 
             var response = new HealthMonitorResponseDTO { GeneratedAt = now };
 
-            foreach (var category in Categories)
+            foreach (var category in categories)
             {
                 var active = store.Emails.Values
                     .Where(e => e.Category == category && e.ResolvedAt == null)
@@ -1009,6 +1022,54 @@ namespace AutoPilot.Service
                 .ToList();
 
             return response;
+        }
+
+        public async Task<List<CategoryListItemDTO>> GetCategoryListAsync()
+        {
+            var store = await _healthStore.LoadAsync();
+            var custom = store.CustomCategories ?? [];
+
+            return DefaultCategories
+                .Select(c => new CategoryListItemDTO { Name = c, IsCustom = false })
+                .Concat(custom.Select(c => new CategoryListItemDTO { Name = c, IsCustom = true }))
+                .ToList();
+        }
+
+        // User-initiated: called when someone adds a folder from the Workflow Monitor UI.
+        // Creates the matching Outlook folder immediately so it's ready for AI categorization.
+        public async Task<CreateCategoryResultDTO> CreateCategoryAsync(string name)
+        {
+            name = name.Trim();
+            if (string.IsNullOrEmpty(name))
+                return new CreateCategoryResultDTO { Success = false, Error = "Folder name is required." };
+
+            var store = await _healthStore.LoadAsync();
+            store.CustomCategories ??= [];
+
+            if (ResolveCategories(store).Any(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase)))
+                return new CreateCategoryResultDTO { Success = false, Error = $"A folder named \"{name}\" already exists." };
+
+            var folderId = await GetOrCreateFolderId(name);
+            if (string.IsNullOrEmpty(folderId))
+                return new CreateCategoryResultDTO { Success = false, Error = "Could not create the Outlook folder." };
+
+            store.CustomCategories.Add(name);
+            await _healthStore.SaveAsync(store);
+
+            return new CreateCategoryResultDTO { Success = true };
+        }
+
+        // Only removes user-created folders from tracking — default categories aren't deletable.
+        // The underlying Outlook folder (and any emails in it) is left untouched.
+        public async Task<bool> DeleteCategoryAsync(string name)
+        {
+            var store = await _healthStore.LoadAsync();
+            store.CustomCategories ??= [];
+
+            var removed = store.CustomCategories.RemoveAll(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase)) > 0;
+            if (removed) await _healthStore.SaveAsync(store);
+
+            return removed;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
