@@ -167,5 +167,29 @@ namespace AutoPilot.Controllers
             var snapshot = await _SummaryService.GetHealthMonitorSnapshot();
             return Ok(snapshot);
         }
+
+        [HttpPost("api/triage/run")]
+        public async Task<IActionResult> RunTriage()
+        {
+            var result = await _SummaryService.TriageInboxAsync();
+            return Ok(result);
+        }
+
+        [HttpPost("api/triage/approve")]
+        public async Task<IActionResult> ApproveDraft([FromBody] ApproveActionDTO request)
+        {
+            if (string.IsNullOrEmpty(request.DraftId))
+                return BadRequest("DraftId is required.");
+
+            var sent = await _SummaryService.ApproveDraftAsync(request.DraftId, request.EditedBody, request.EditedSubject, request.EditedTo);
+            return sent ? Ok(new { success = true }) : StatusCode(500, new { success = false });
+        }
+
+        [HttpDelete("api/triage/draft/{draftId}")]
+        public async Task<IActionResult> RejectDraft(string draftId)
+        {
+            var deleted = await _SummaryService.RejectDraftAsync(draftId);
+            return deleted ? Ok(new { success = true }) : StatusCode(500, new { success = false });
+        }
     }
 }
