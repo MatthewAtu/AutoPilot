@@ -190,13 +190,18 @@ namespace AutoPilot.Service
         public async Task<List<TaskItemDTO>> GetTasksAsync()
         {
             var emailText = await GetRecentEmailsAsync();
-            var botSummary = await GetBotEmailSummary(emailText);
-            var botText = botSummary.Message?.Body?.Content ?? "";
 
-            var tasksSection = Regex.Match(botText, @"Tasks:\s*([\s\S]+?)(?:\n\n|$)");
-            if (!tasksSection.Success) return [];
+            var systemPrompt =
+                "You are an AI productivity assistant. Analyze emails and extract actionable tasks.\n" +
+                "Output ONLY a numbered list. No preamble, no explanation.\n" +
+                "Each task is a single concise sentence starting with an action verb. Maximum 10 tasks.\n\n" +
+                "Output format (STRICT):\nTasks:\n1. <task 1>\n2. <task 2>";
 
-            var taskMatches = Regex.Matches(tasksSection.Groups[1].Value, @"\d+\.\s+(.+)");
+            var llmResponse = await CallLLMAsync(systemPrompt, emailText);
+
+            var tasksSection = Regex.Match(llmResponse, @"Tasks:\s*([\s\S]+?)(?:\n\n|$)");
+            var source = tasksSection.Success ? tasksSection.Groups[1].Value : llmResponse;
+            var taskMatches = Regex.Matches(source, @"\d+\.\s+(.+)");
 
             return taskMatches
                 .Select(m => new TaskItemDTO
@@ -337,31 +342,31 @@ namespace AutoPilot.Service
             var parsedReturn = JsonSerializer.Deserialize<RecieveEmailDTO>(returnedFolders,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
-            var cleanedFolders = parsedReturn?.Value?
-                .Select(e => new
-                {
-                    e.Id,
-                    e.DisplayName
-                })
-                .ToList();
+            var match = parsedReturn?.Value?
+                .FirstOrDefault(f => string.Equals(f.DisplayName, DisplayName, StringComparison.OrdinalIgnoreCase));
 
-            string FolderId = "";
+            if (match?.Id != null)
+                return match.Id;
 
-            if (cleanedFolders != null)
+            // Folder doesn't exist — create it
+            var createBody = new StringContent(
+                JsonSerializer.Serialize(new { displayName = DisplayName }),
+                Encoding.UTF8,
+                "application/json");
+
+            var createResponse = await _graphClient.PostAsync(
+                "https://graph.microsoft.com/v1.0/me/mailFolders",
+                createBody);
+
+            if (!createResponse.IsSuccessStatusCode)
             {
-                foreach (var folder in cleanedFolders)
-                {
-                    if (folder.DisplayName == DisplayName)
-                    {
-                        if (folder.Id != null)
-                        {
-                            FolderId = folder.Id;
-                            return FolderId;
-                        }
-                    }
-                }
+                Console.WriteLine($"Failed to create folder '{DisplayName}': {createResponse.StatusCode}");
+                return "";
             }
-            return FolderId;
+
+            var created = await createResponse.Content.ReadAsStringAsync();
+            var createdFolder = JsonSerializer.Deserialize<JsonElement>(created);
+            return createdFolder.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? "" : "";
         }
 
         public async Task<string> GetCompletedEmails()
@@ -401,96 +406,290 @@ namespace AutoPilot.Service
             return CapString(StripHtml(emailText));
         }
 
-        public async Task<string> CategorizeCompletedEmails()
+        public async Task<List<WorkflowResultDTO>> CategorizeCompletedEmails(List<string> categories)
         {
-            // get the emails that are in the completed
             var emails = await GetCompletedEmails();
 
-            Console.WriteLine(emails);
+            if (emails == "No emails found.")
+                return [];
+
+            var categoryList = string.Join(", ", categories);
+            var fallback = categories.LastOrDefault() ?? "General Inquiry";
+
+            // Extract email IDs from the raw text before calling the LLM
+            var idMatches = Regex.Matches(emails, @"^Id:\s*(.+)$", RegexOptions.Multiline);
+            var emailIds = idMatches.Select(m => m.Groups[1].Value.Trim()).ToList();
 
             var systemPrompt = $"""
-            You are an email classification engine.
-
-            Your job is to classify a completed email into exactly one of the following categories:
-
-            - Finance
-            - Requests
-            - IT Support
-            - Approvals
-            - General Inquiry
+            You are an email classifier. You will receive one or more emails separated by blank lines.
+            Classify each email into exactly one of these categories: {categoryList}.
 
             Rules:
-            1. Return only the category name.
-            2. Do not explain your reasoning.
-            3. Do not return multiple categories.
-            4. If the email does not clearly fit a category, return "General Inquiry".
-            5. Consider only the body when classifying.
-            6. When you see "From:", it is the begining of a new email. Give another category for that email.
-            7. Separate every new category by a comma. In the format: Id: category,
+            - Reply with ONLY the category names, one per line, in the same order as the emails.
+            - Do not include IDs, numbers, punctuation, or any explanation.
+            - If an email does not fit any category, use "{fallback}".
             """;
 
-            var userPrompt = $"""
-            emails:
-            {emails}
-            """;
+            var userPrompt = $"Emails:\n\n{emails}";
 
-            var getCategories = await CallLLMAsync(systemPrompt, userPrompt);
- 
-            string[] categories = getCategories.Split(',')
-            .Select(x => x.Trim())
-            .ToArray();
+            var llmResponse = await CallLLMAsync(systemPrompt, userPrompt);
 
-            //get the folder ID
-            foreach (var category in categories)
+            // Parse: one category per line, matched positionally to emailIds
+            var categoryLines = llmResponse
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(l => l.Trim().TrimStart('-', '*', '•').Trim())
+                .Where(l => l.Length > 0)
+                .ToList();
+
+            var results = new List<WorkflowResultDTO>();
+            for (int i = 0; i < emailIds.Count; i++)
             {
+                var messageId = emailIds[i];
+                var rawCategory = categoryLines.Count > i ? categoryLines[i] : fallback;
+                // snap to nearest known category; fall back if LLM hallucinated
+                var category = categories.FirstOrDefault(c =>
+                    rawCategory.Contains(c, StringComparison.OrdinalIgnoreCase)) ?? fallback;
+
+                if (string.IsNullOrWhiteSpace(messageId)) continue;
+
                 var destinationFolderId = await GetFolderId(category);
+                bool moved = false;
 
-                var match = Regex.Match(
-                    emails,
-                    @"^Id:\s*(.+)$",
-                    RegexOptions.Multiline);
-
-                if (!match.Success)
+                if (!string.IsNullOrEmpty(destinationFolderId))
                 {
-                    Console.WriteLine($"No message ID found for category '{category}'.");
-                    continue;
+                    var requestBody = new StringContent(
+                        JsonSerializer.Serialize(new MoveRequestDTO { DestinationId = destinationFolderId }),
+                        Encoding.UTF8,
+                        "application/json");
+
+                    var response = await _graphClient.PostAsync(
+                        $"https://graph.microsoft.com/v1.0/me/messages/{messageId}/move",
+                        requestBody);
+
+                    moved = response.IsSuccessStatusCode;
+                    Console.WriteLine(moved
+                        ? $"Moved '{messageId}' → '{category}'"
+                        : $"Failed to move '{messageId}' → '{category}' ({response.StatusCode})");
                 }
 
-                string messageId = match.Groups[1].Value.Trim();
-
-                Console.WriteLine($"{category} -> {messageId}");
-
-                var moveRequest = new MoveRequestDTO
-                {
-                    DestinationId = destinationFolderId
-                };
-
-                var requestJson = JsonSerializer.Serialize(moveRequest);
-                var requestBody = new StringContent(
-                    requestJson,
-                    Encoding.UTF8,
-                    "application/json");
-
-                var response = await _graphClient.PostAsync(
-                    $"https://graph.microsoft.com/v1.0/me/messages/{messageId}/move",
-                    requestBody
-                    );
-
-                if (response.IsSuccessStatusCode)
-                {
-                    Console.WriteLine(
-                        $"Successfully moved message '{messageId}' to '{category}'.");
-                }
-                else
-                {
-                    Console.WriteLine(
-                        $"Failed to move message '{messageId}' to '{category}'. " +
-                        $"Status: {response.StatusCode}");
-                }
+                results.Add(new WorkflowResultDTO { EmailId = messageId, Category = category, Moved = moved });
             }
 
-            return getCategories;
+            return results;
         }
+
+        public async Task<List<string>> GetMailFoldersAsync()
+        {
+            var response = await _graphClient.GetAsync(
+                "https://graph.microsoft.com/v1.0/me/mailFolders?$select=displayName&$top=50");
+            var content = await response.Content.ReadAsStringAsync();
+            var parsed = JsonSerializer.Deserialize<RecieveEmailDTO>(content,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            return parsed?.Value?
+                .Where(f => !string.IsNullOrEmpty(f.DisplayName))
+                .Select(f => f.DisplayName!)
+                .OrderBy(n => n)
+                .ToList() ?? [];
+        }
+
+        // ─── Smart Triage ────────────────────────────────────────────────────────
+
+        public async Task<TriageRunResult> TriageInboxAsync()
+        {
+            var messages = await _graphClient.GetAsync(
+                "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$select=subject,from,body,receivedDateTime,isRead&$top=15"
+            );
+            var raw = await messages.Content.ReadAsStringAsync();
+            var parsed = JsonSerializer.Deserialize<RecieveEmailDTO>(raw,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            var emails = parsed?.Value ?? [];
+            var results = new List<TriageEmailResult>();
+
+            foreach (var email in emails)
+            {
+                var result = await AnalyzeEmailAsync(email);
+                results.Add(result);
+            }
+
+            return new TriageRunResult
+            {
+                Results = results,
+                TotalAnalyzed = results.Count,
+                DraftsPending = results.Count(r => r.DraftId != null),
+                TasksCreated = results.Count(r => r.Action == "task_needed" && r.TaskText != null),
+                NeedReview = results.Count(r => r.NeedsReview)
+            };
+        }
+
+        private async Task<TriageEmailResult> AnalyzeEmailAsync(ValueDTO email)
+        {
+            var fromName = email.From?.EmailAddress?.Name ?? "Unknown";
+            var fromAddr = email.From?.EmailAddress?.Address ?? "";
+            var subject = email.Subject ?? "No Subject";
+            var bodyText = CapString(StripHtml(email.Body?.Content ?? ""), 600);
+            var received = FormatReceivedTime(email.ReceivedDateTime);
+
+            var result = new TriageEmailResult
+            {
+                Id = email.Id ?? "",
+                Subject = subject,
+                From = fromName,
+                FromAddress = fromAddr,
+                Preview = CapString(bodyText, 120),
+                ReceivedTime = received,
+            };
+
+            var systemPrompt = """
+                You are an intelligent email triage assistant. Analyze the email and decide the best action.
+
+                Respond with ONLY valid JSON (no markdown, no code fences) in this exact format:
+                {
+                  "action": "reply_needed",
+                  "confidence": 0.85,
+                  "reasoning": "one sentence explaining why",
+                  "draftContent": "full draft text if reply_needed or forward_needed, else null",
+                  "draftTo": "email address if forward_needed, else null",
+                  "taskText": "task description if task_needed, else null"
+                }
+
+                Action rules:
+                - "reply_needed": email clearly expects a response from us (question, request, invitation)
+                - "forward_needed": another team or person should handle this (wrong recipient, specialized request)
+                - "task_needed": we need to complete an action (fill a form, submit something, schedule something)
+                - "info_only": no action needed, purely informational (newsletters, confirmations, FYI)
+
+                Confidence rules:
+                - 0.90-1.00: completely clear, unambiguous action
+                - 0.70-0.89: likely correct, one dominant interpretation
+                - 0.50-0.69: uncertain, could go multiple ways
+                - below 0.50: very ambiguous, needs human review
+
+                For reply_needed: write a professional, concise reply draft. Start with a greeting.
+                For forward_needed: write a forwarding note explaining why you're forwarding and what needs to be done. Set draftTo to the best guessed team email based on context.
+                For task_needed: extract the specific task as a clear action sentence.
+                """;
+
+            var userPrompt = $"From: {fromName} <{fromAddr}>\nSubject: {subject}\n\n{bodyText}";
+
+            try
+            {
+                var llmRaw = await CallLLMAsync(systemPrompt, userPrompt);
+
+                // Strip markdown code fences if present
+                var json = Regex.Match(llmRaw, @"\{[\s\S]*\}").Value;
+                if (string.IsNullOrEmpty(json)) json = llmRaw;
+
+                var analysis = JsonSerializer.Deserialize<LlmTriageResult>(json,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                if (analysis == null)
+                {
+                    result.Action = "info_only";
+                    result.Confidence = 0.3;
+                    result.Reasoning = "Could not parse AI response.";
+                    result.NeedsReview = true;
+                    return result;
+                }
+
+                result.Action = analysis.action ?? "info_only";
+                result.Confidence = Math.Clamp(analysis.confidence, 0.0, 1.0);
+                result.Reasoning = analysis.reasoning ?? "";
+                result.NeedsReview = result.Confidence < 0.60;
+                result.TaskText = analysis.taskText;
+
+                // Create Outlook draft if confidence is sufficient
+                if (!result.NeedsReview && analysis.draftContent != null &&
+                    (result.Action == "reply_needed" || result.Action == "forward_needed"))
+                {
+                    var toAddress = result.Action == "reply_needed" ? fromAddr : (analysis.draftTo ?? fromAddr);
+                    var draftSubject = result.Action == "reply_needed" ? $"Re: {subject}" : $"Fwd: {subject}";
+
+                    var (draftId, draftBody) = await CreateOutlookDraftAsync(
+                        draftSubject, analysis.draftContent, toAddress);
+
+                    result.DraftId = draftId;
+                    result.DraftSubject = draftSubject;
+                    result.DraftBody = draftBody;
+                    result.DraftTo = toAddress;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Triage error for '{subject}': {ex.Message}");
+                result.Action = "info_only";
+                result.Confidence = 0.3;
+                result.Reasoning = "Analysis failed. Manual review recommended.";
+                result.NeedsReview = true;
+            }
+
+            return result;
+        }
+
+        private async Task<(string? draftId, string? draftBody)> CreateOutlookDraftAsync(
+            string subject, string body, string toAddress)
+        {
+            var draftPayload = new
+            {
+                subject,
+                body = new { contentType = "Text", content = body },
+                toRecipients = new[]
+                {
+                    new { emailAddress = new { address = toAddress } }
+                }
+            };
+
+            var content = new StringContent(
+                JsonSerializer.Serialize(draftPayload), Encoding.UTF8, "application/json");
+
+            var response = await _graphClient.PostAsync(
+                "https://graph.microsoft.com/v1.0/me/messages", content);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"Draft creation failed: {response.StatusCode}");
+                return (null, null);
+            }
+
+            var responseText = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(responseText);
+            var id = doc.RootElement.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+            return (id, body);
+        }
+
+        public async Task<bool> ApproveDraftAsync(string draftId, string? editedBody)
+        {
+            if (!string.IsNullOrEmpty(editedBody))
+            {
+                var updatePayload = new
+                {
+                    body = new { contentType = "Text", content = editedBody }
+                };
+                var patchContent = new StringContent(
+                    JsonSerializer.Serialize(updatePayload), Encoding.UTF8, "application/json");
+                var patchReq = new HttpRequestMessage(new HttpMethod("PATCH"),
+                    $"https://graph.microsoft.com/v1.0/me/messages/{draftId}")
+                {
+                    Content = patchContent
+                };
+                await _graphClient.SendAsync(patchReq);
+            }
+
+            var sendResponse = await _graphClient.PostAsync(
+                $"https://graph.microsoft.com/v1.0/me/messages/{draftId}/send",
+                new StringContent(""));
+
+            return sendResponse.IsSuccessStatusCode;
+        }
+
+        public async Task<bool> RejectDraftAsync(string draftId)
+        {
+            var response = await _graphClient.DeleteAsync(
+                $"https://graph.microsoft.com/v1.0/me/messages/{draftId}");
+            return response.IsSuccessStatusCode;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
@@ -508,10 +707,8 @@ namespace AutoPilot.Service
 
                 await Task.Delay(delay, stoppingToken);
 
-                Console.WriteLine("Sending Daily Summary...");
-                var recentEmails = await GetRecentEmailsAsync();
-                var getBotSummary = await GetBotEmailSummary(recentEmails);
-                await SendTasksEmailToOutLook(getBotSummary);
+                // Daily summary logging only — no emails sent without user approval
+                Console.WriteLine("Daily summary tick (no auto-send).");
             }
         }
 

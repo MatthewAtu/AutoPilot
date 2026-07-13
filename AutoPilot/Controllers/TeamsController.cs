@@ -19,8 +19,6 @@ namespace AutoPilot.Controllers
         public async Task<IActionResult> GetEmailsAsync()
         {
             var emails = await _SummaryService.GetRecentEmailsAsync();
-            var botEmail = await _SummaryService.GetBotEmailSummary(emails);
-            await _SummaryService.SendTasksEmailToOutLook(botEmail);
             return Ok(emails);
         }
 
@@ -91,19 +89,45 @@ namespace AutoPilot.Controllers
             }
         }
 
-        [HttpGet("api/Workflow")]
-        public async Task<IActionResult> WorkflowCategoriseEmail()
+        [HttpPost("api/Workflow")]
+        public async Task<IActionResult> WorkflowCategoriseEmail([FromBody] WorkflowRequestDTO request)
         {
-            // get the emails in the completed folder
-            var completedEmails = await _SummaryService.GetCompletedEmails();
+            if (request.Categories == null || request.Categories.Count == 0)
+                return BadRequest("At least one category is required.");
 
-            Console.WriteLine(completedEmails);
+            var results = await _SummaryService.CategorizeCompletedEmails(request.Categories);
+            return Ok(results);
+        }
 
-            // then the ai returns the category
-            // finally it is put into the folder with the name that matches the category
-             var AICategorize = await _SummaryService.CategorizeCompletedEmails();
+        [HttpGet("api/folders")]
+        public async Task<IActionResult> GetMailFolders()
+        {
+            var folders = await _SummaryService.GetMailFoldersAsync();
+            return Ok(folders);
+        }
 
-            return Ok(AICategorize);
+        [HttpPost("api/triage/run")]
+        public async Task<IActionResult> RunTriage()
+        {
+            var result = await _SummaryService.TriageInboxAsync();
+            return Ok(result);
+        }
+
+        [HttpPost("api/triage/approve")]
+        public async Task<IActionResult> ApproveDraft([FromBody] ApproveActionDTO request)
+        {
+            if (string.IsNullOrEmpty(request.DraftId))
+                return BadRequest("DraftId is required.");
+
+            var sent = await _SummaryService.ApproveDraftAsync(request.DraftId, request.EditedBody);
+            return sent ? Ok(new { success = true }) : StatusCode(500, new { success = false });
+        }
+
+        [HttpDelete("api/triage/draft/{draftId}")]
+        public async Task<IActionResult> RejectDraft(string draftId)
+        {
+            var deleted = await _SummaryService.RejectDraftAsync(draftId);
+            return deleted ? Ok(new { success = true }) : StatusCode(500, new { success = false });
         }
     }
 }

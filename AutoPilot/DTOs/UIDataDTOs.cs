@@ -48,6 +48,18 @@ namespace AutoPilot.DTOs
         public string? Transcript { get; set; }
     }
 
+    public class WorkflowRequestDTO
+    {
+        public List<string> Categories { get; set; } = [];
+    }
+
+    public class WorkflowResultDTO
+    {
+        public string EmailId { get; set; } = "";
+        public string Category { get; set; } = "";
+        public bool Moved { get; set; }
+    }
+
     // Graph API calendar response shapes
     public class CalendarApiResponse
     {

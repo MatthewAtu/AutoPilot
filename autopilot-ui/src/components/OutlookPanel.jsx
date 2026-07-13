@@ -1,80 +1,85 @@
 import { useState, useEffect } from 'react'
 
-const AVATAR_COLORS = [
-  'from-blue-500 to-cyan-400',
-  'from-violet-500 to-purple-400',
-  'from-emerald-500 to-teal-400',
-  'from-orange-500 to-amber-400',
-  'from-rose-500 to-pink-400',
-  'from-indigo-500 to-blue-400',
+const AVATAR_PALETTE = [
+  'bg-indigo-100 text-indigo-700',
+  'bg-violet-100 text-violet-700',
+  'bg-blue-100 text-blue-700',
+  'bg-emerald-100 text-emerald-700',
+  'bg-orange-100 text-orange-700',
+  'bg-pink-100 text-pink-700',
+  'bg-cyan-100 text-cyan-700',
+  'bg-amber-100 text-amber-700',
 ]
 
 export default function OutlookPanel() {
-  const [emails, setEmails] = useState([])
+  const [emails,  setEmails]  = useState([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [error,   setError]   = useState(null)
 
   useEffect(() => {
     fetch('/api/emails/list')
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
-      .then(data => setEmails(data))
-      .catch(() => setError('Failed to load emails'))
+      .then(setEmails)
+      .catch(() => setError('Could not load emails.'))
       .finally(() => setLoading(false))
   }, [])
 
-  const unreadCount = emails.filter(e => e.unread).length
-
-  function openOutlook(weblink) {
-    window.open(weblink, '_blank', 'width=800,height=600')
-  }
+  const unread = emails.filter(e => e.unread).length
 
   return (
     <div className="flex flex-col h-full">
-      <PanelHeader icon={
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-        </svg>
-      } title="Inbox">
-        {!loading && !error && unreadCount > 0 && (
-          <span className="text-xs bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2 py-0.5 rounded-full font-medium">
-            {unreadCount} unread
+      {/* Header */}
+      <div className="h-12 flex items-center justify-between px-5 border-b border-slate-100 shrink-0">
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-lg bg-indigo-50 flex items-center justify-center">
+            <svg className="w-4 h-4 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <span className="text-[13px] font-semibold text-slate-700">Inbox</span>
+        </div>
+        {!loading && !error && unread > 0 && (
+          <span className="text-[11px] font-semibold bg-indigo-600 text-white px-2 py-0.5 rounded-full">
+            {unread} new
           </span>
         )}
-      </PanelHeader>
+      </div>
 
-      {loading && <PanelStatus text="Loading emails…" />}
-      {error && <PanelStatus text={error} isError />}
-
+      {/* Body */}
+      {loading && <SkeletonList />}
+      {error   && <Empty>{error}</Empty>}
       {!loading && !error && (
-        <div className="overflow-y-auto flex-1 divide-y divide-slate-800/60">
-          {emails.length === 0 && <PanelStatus text="No emails found." />}
+        <div className="flex-1 overflow-y-auto divide-y divide-slate-50">
+          {emails.length === 0 && <Empty>Your inbox is empty.</Empty>}
           {emails.map((email, i) => (
-            <div
+            <button
               key={email.id}
-              onClick={() => openOutlook(email.webLink)}
-              className={`flex gap-3 p-4 cursor-pointer hover:bg-slate-800/50 transition-all duration-150 group ${
-                email.unread ? 'bg-indigo-950/20' : ''
+              onClick={() => email.webLink && window.open(email.webLink, '_blank')}
+              className={`anim-item w-full flex items-start gap-3 px-5 py-3.5 text-left hover:bg-slate-50 transition-colors group ${
+                email.unread ? 'bg-indigo-50/40' : ''
               }`}
             >
-              <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${AVATAR_COLORS[i % AVATAR_COLORS.length]} flex items-center justify-center text-white text-xs font-bold shrink-0 mt-0.5 shadow-lg`}>
+              {/* Avatar */}
+              <div className={`w-8 h-8 rounded-full shrink-0 flex items-center justify-center text-xs font-bold mt-0.5 ${AVATAR_PALETTE[i % AVATAR_PALETTE.length]}`}>
                 {(email.from ?? '?')[0].toUpperCase()}
               </div>
+
+              {/* Text */}
               <div className="flex-1 min-w-0">
-                <div className="flex justify-between items-start gap-2">
-                  <span className={`text-sm truncate ${email.unread ? 'font-semibold text-slate-100' : 'text-slate-300'}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className={`text-[13px] truncate ${email.unread ? 'font-semibold text-slate-900' : 'font-medium text-slate-700'}`}>
                     {email.from}
                   </span>
-                  <span className="text-xs text-slate-500 shrink-0 group-hover:text-slate-400 transition-colors">{email.receivedTime}</span>
+                  <span className="text-[11px] text-slate-400 shrink-0">{email.receivedTime}</span>
                 </div>
-                <p className={`text-xs truncate mt-0.5 ${email.unread ? 'font-medium text-slate-200' : 'text-slate-400'}`}>
+                <p className={`text-[12px] truncate mt-0.5 ${email.unread ? 'font-medium text-slate-700' : 'text-slate-500'}`}>
                   {email.subject}
                 </p>
-                <p className="text-xs text-slate-500 truncate mt-0.5">{email.preview}</p>
+                <p className="text-[11px] text-slate-400 truncate mt-0.5">{email.preview}</p>
               </div>
-              {email.unread && (
-                <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0 mt-2 shadow-sm shadow-indigo-400/50" />
-              )}
-            </div>
+
+              {email.unread && <div className="w-2 h-2 rounded-full bg-indigo-500 shrink-0 mt-2" />}
+            </button>
           ))}
         </div>
       )}
@@ -82,22 +87,44 @@ export default function OutlookPanel() {
   )
 }
 
-export function PanelHeader({ icon, title, children }) {
+/* ── Shared primitives ──────────────────────────── */
+export function PanelHeader({ icon, title, badge, action }) {
   return (
-    <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800/80 shrink-0">
-      <div className="flex items-center gap-2">
-        <span className="text-indigo-400">{icon}</span>
-        <h2 className="text-xs font-semibold text-slate-300 uppercase tracking-widest">{title}</h2>
+    <div className="h-12 flex items-center justify-between px-5 border-b border-slate-100 shrink-0">
+      <div className="flex items-center gap-2.5">
+        <div className="w-7 h-7 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-500">
+          {icon}
+        </div>
+        <span className="text-[13px] font-semibold text-slate-700">{title}</span>
       </div>
-      {children && <div className="flex items-center gap-2">{children}</div>}
+      <div className="flex items-center gap-2">
+        {badge}
+        {action}
+      </div>
     </div>
   )
 }
 
-function PanelStatus({ text, isError }) {
+export function Empty({ children }) {
   return (
-    <div className={`flex-1 flex items-center justify-center text-sm ${isError ? 'text-rose-400' : 'text-slate-500'}`}>
-      {text}
+    <div className="flex-1 flex flex-col items-center justify-center gap-2 text-slate-400 px-6 text-center">
+      <p className="text-[13px]">{children}</p>
+    </div>
+  )
+}
+
+function SkeletonList() {
+  return (
+    <div className="flex-1 overflow-hidden divide-y divide-slate-50 p-0">
+      {[...Array(5)].map((_, i) => (
+        <div key={i} className="flex items-start gap-3 px-5 py-3.5">
+          <div className="skeleton w-8 h-8 rounded-full shrink-0" />
+          <div className="flex-1 space-y-2 py-0.5">
+            <div className="skeleton h-3 w-2/5 rounded" />
+            <div className="skeleton h-2.5 w-3/5 rounded" />
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
