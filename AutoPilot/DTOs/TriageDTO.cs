@@ -46,14 +46,21 @@ namespace AutoPilot.DTOs
         public string? taskText { get; set; }
     }
 
-    // Persisted record linking a source email to the Outlook draft already created for it,
-    // so re-running triage doesn't create a duplicate draft for the same email.
+    // Persisted triage result for a source email — caches the full classification (not just
+    // the draft) so re-running triage doesn't re-spend LLM tokens re-analyzing an email it has
+    // already seen, and doesn't create a duplicate Outlook draft for the same email.
     public class TriageDraftRecord
     {
-        public string DraftId { get; set; } = "";
-        public string DraftSubject { get; set; } = "";
-        public string DraftBody { get; set; } = "";
-        public string DraftTo { get; set; } = "";
+        public string Action { get; set; } = "info_only";
+        public double Confidence { get; set; }
+        public string Reasoning { get; set; } = "";
+        public bool NeedsReview { get; set; }
+        public string? TaskText { get; set; }
+        public string? DraftId { get; set; }
+        public string? DraftSubject { get; set; }
+        public string? DraftBody { get; set; }
+        public string? DraftTo { get; set; }
+        public DateTime AnalyzedAt { get; set; }
     }
 
     public class TriageDraftStoreData

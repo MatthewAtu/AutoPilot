@@ -171,28 +171,50 @@ namespace AutoPilot.Service
                 messages.Add(new { role = "user", content = userMessage });
 
                 var requestBody = new { model = "llama-3.1-8b-instant", messages, max_tokens = 800 };
-                var request = new HttpRequestMessage(HttpMethod.Post, "https://api.groq.com/openai/v1/chat/completions")
-                {
-                    Content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json")
-                };
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _groqApiKey);
 
-                var response = await _groqClient.SendAsync(request);
-                var responseText = await response.Content.ReadAsStringAsync();
-
-                using var doc = JsonDocument.Parse(responseText);
-                if (!response.IsSuccessStatusCode || !doc.RootElement.TryGetProperty("choices", out var choices))
+                const int maxAttempts = 3;
+                for (var attempt = 1; attempt <= maxAttempts; attempt++)
                 {
+                    var request = new HttpRequestMessage(HttpMethod.Post, "https://api.groq.com/openai/v1/chat/completions")
+                    {
+                        Content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json")
+                    };
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _groqApiKey);
+
+                    var response = await _groqClient.SendAsync(request);
+                    var responseText = await response.Content.ReadAsStringAsync();
+
+                    using var doc = JsonDocument.Parse(responseText);
+                    if (response.IsSuccessStatusCode && doc.RootElement.TryGetProperty("choices", out var choices))
+                    {
+                        return choices[0]
+                            .GetProperty("message")
+                            .GetProperty("content")
+                            .GetString() ?? "No response";
+                    }
+
                     var errorMessage = doc.RootElement.TryGetProperty("error", out var err) && err.TryGetProperty("message", out var msg)
-                        ? msg.GetString()
+                        ? msg.GetString() ?? responseText
                         : responseText;
+
+                    // Groq's 429 body tells us exactly how long until the token bucket refills —
+                    // honor it and retry instead of failing the whole triage/categorize pass over
+                    // one rate-limited call. Other errors (auth, bad request) fail immediately.
+                    if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests && attempt < maxAttempts)
+                    {
+                        var waitSeconds = 2.0;
+                        var match = Regex.Match(errorMessage, @"try again in ([\d.]+)s");
+                        if (match.Success && double.TryParse(match.Groups[1].Value, out var parsedWait))
+                            waitSeconds = parsedWait;
+
+                        await Task.Delay(TimeSpan.FromSeconds(waitSeconds + 0.5));
+                        continue;
+                    }
+
                     throw new InvalidOperationException($"Groq API error ({(int)response.StatusCode}): {errorMessage}");
                 }
 
-                return choices[0]
-                    .GetProperty("message")
-                    .GetProperty("content")
-                    .GetString() ?? "No response";
+                throw new InvalidOperationException("Groq API error: exceeded retry attempts.");
             }
 
             // Ollama path
@@ -1175,6 +1197,29 @@ namespace AutoPilot.Service
                 ReceivedTime = received,
             };
 
+            // Reuse a previous analysis if we have one, so re-running triage doesn't re-spend
+            // LLM tokens (and risk rate limits) re-classifying emails it has already seen.
+            // Drafted emails are cached indefinitely (cleared on approve/reject); everything
+            // else expires after a few hours so a bad/ambiguous call eventually gets retried.
+            var draftStore = await _triageDraftStore.LoadAsync();
+            if (!string.IsNullOrEmpty(result.Id) && draftStore.Drafts.TryGetValue(result.Id, out var cached))
+            {
+                var isStale = cached.DraftId == null && (DateTime.UtcNow - cached.AnalyzedAt) > TimeSpan.FromHours(6);
+                if (!isStale)
+                {
+                    result.Action = cached.Action;
+                    result.Confidence = cached.Confidence;
+                    result.Reasoning = cached.Reasoning;
+                    result.NeedsReview = cached.NeedsReview;
+                    result.TaskText = cached.TaskText;
+                    result.DraftId = cached.DraftId;
+                    result.DraftSubject = cached.DraftSubject;
+                    result.DraftBody = cached.DraftBody;
+                    result.DraftTo = cached.DraftTo;
+                    return result;
+                }
+            }
+
             var systemPrompt = """
                 You are an intelligent email triage assistant. Analyze the email and decide the best action.
 
@@ -1240,46 +1285,43 @@ namespace AutoPilot.Service
                     (result.Action == "reply_needed" || result.Action == "forward_needed") &&
                     !string.IsNullOrEmpty(result.Id))
                 {
-                    var draftStore = await _triageDraftStore.LoadAsync();
+                    var toAddress = result.Action == "reply_needed" ? fromAddr : (analysis.draftTo ?? fromAddr);
+                    var draftSubject = result.Action == "reply_needed" ? $"Re: {subject}" : $"Fwd: {subject}";
 
-                    if (draftStore.Drafts.TryGetValue(result.Id, out var existingDraft))
+                    var (draftId, draftBody) = await CreateOutlookDraftAsync(
+                        draftSubject, analysis.draftContent, toAddress);
+
+                    result.DraftId = draftId;
+                    result.DraftSubject = draftSubject;
+                    result.DraftBody = draftBody;
+                    result.DraftTo = toAddress;
+                }
+
+                // Cache the successful classification (draft or not) so a re-run of triage can
+                // skip the LLM call for this email entirely next time.
+                if (!string.IsNullOrEmpty(result.Id))
+                {
+                    draftStore.Drafts[result.Id] = new TriageDraftRecord
                     {
-                        // Already drafted on a previous triage run — reuse it instead of
-                        // creating a duplicate Outlook draft for the same source email.
-                        result.DraftId = existingDraft.DraftId;
-                        result.DraftSubject = existingDraft.DraftSubject;
-                        result.DraftBody = existingDraft.DraftBody;
-                        result.DraftTo = existingDraft.DraftTo;
-                    }
-                    else
-                    {
-                        var toAddress = result.Action == "reply_needed" ? fromAddr : (analysis.draftTo ?? fromAddr);
-                        var draftSubject = result.Action == "reply_needed" ? $"Re: {subject}" : $"Fwd: {subject}";
-
-                        var (draftId, draftBody) = await CreateOutlookDraftAsync(
-                            draftSubject, analysis.draftContent, toAddress);
-
-                        result.DraftId = draftId;
-                        result.DraftSubject = draftSubject;
-                        result.DraftBody = draftBody;
-                        result.DraftTo = toAddress;
-
-                        if (draftId != null)
-                        {
-                            draftStore.Drafts[result.Id] = new TriageDraftRecord
-                            {
-                                DraftId = draftId,
-                                DraftSubject = draftSubject,
-                                DraftBody = draftBody ?? "",
-                                DraftTo = toAddress
-                            };
-                            await _triageDraftStore.SaveAsync(draftStore);
-                        }
-                    }
+                        Action = result.Action,
+                        Confidence = result.Confidence,
+                        Reasoning = result.Reasoning,
+                        NeedsReview = result.NeedsReview,
+                        TaskText = result.TaskText,
+                        DraftId = result.DraftId,
+                        DraftSubject = result.DraftSubject,
+                        DraftBody = result.DraftBody,
+                        DraftTo = result.DraftTo,
+                        AnalyzedAt = DateTime.UtcNow
+                    };
+                    await _triageDraftStore.SaveAsync(draftStore);
                 }
             }
             catch (Exception ex)
             {
+                // Transient failures (rate limits, network errors) are not cached — the email
+                // is simply retried on the next triage run instead of being permanently
+                // mislabeled as info_only.
                 Console.WriteLine($"Triage error for '{subject}': {ex.Message}");
                 result.Action = "info_only";
                 result.Confidence = 0.3;
